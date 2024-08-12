@@ -1,0 +1,5 @@
+venv/
+*wip*
+*tmp*
+*txt
+__pycache__/

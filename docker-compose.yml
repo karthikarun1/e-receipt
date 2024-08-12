@@ -1,0 +1,15 @@
+version: '3.8'
+services:
+  my-model-deployment-tool:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/app
+    environment:
+      - FLASK_ENV=production
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health_check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

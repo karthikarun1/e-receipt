@@ -1,0 +1,8 @@
+Flask==3.0.3
+gunicorn==20.1.0  # Add if using in production
+scikit-learn==1.5.1
+numpy==2.0.1
+scipy==1.14.0
+requests==2.32.3
+pytest==8.3.2  # Remove if not running tests in production
+joblib==1.4.2

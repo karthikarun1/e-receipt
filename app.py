@@ -1,93 +1,140 @@
-from flask import Flask, request, jsonify
-from flask_httpauth import HTTPBasicAuth
-
-import pickle
+from flask import Flask, request, jsonify, send_file
 import os
+import joblib
+import functools
 
 app = Flask(__name__)
-auth = HTTPBasicAuth()
 
-model_directory = 'models'  # Directory where models will be stored
+# Directory to store models
+MODEL_DIR = "models"
 
-# Dummy user store
-users = {
-    "admin": "password"  # Replace with environment variables or a secure store in production
-}
+# Basic authentication
+def check_auth(username, password):
+    return username == 'admin' and password == 'secret'
 
-@auth.get_password
-def get_password(username):
-    if username in users:
-        return users.get(username)
-    return None
+def authenticate():
+    return jsonify({"message": "Authentication required"}), 401
 
-def load_model_from_file(filename):
-    with open(filename, 'rb') as f:
-        return pickle.load(f)
+def requires_auth(f):
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*args, **kwargs)
+    return decorated
 
-@app.route('/')
-@auth.login_required
-def index():
-    return "Welcome to the ML Model Deployment Tool!"
-
-@app.route('/upload_model', methods=['POST'])
-@auth.login_required
-def upload_model():
-    model_file = request.files.get('model')
-    if not model_file:
-        return jsonify({'error': 'No model file provided'}), 400
-
-    filename = os.path.join(model_directory, model_file.filename)
-    model_file.save(filename)
-    return jsonify({'message': f'Model saved as {filename}'}), 200
+def requires_data(f):
+    @functools.wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Check if data exists in JSON or form
+        data = request.json if request.is_json else request.form
+        if not data:
+            return jsonify({"error": "Bad Request", 
+                            "message": "Request data is missing."}), 400
+        return f(*args, **kwargs)
+    return decorated_function
 
 @app.route('/health_check', methods=['GET'])
 def health_check():
-    return jsonify({'status': 'ok'}), 200
+    return jsonify({"message": "App is running"}), 200
 
-@app.route('/list_models', methods=['GET'])
-@auth.login_required
-def list_models():
-    if not os.path.exists(model_directory):
-        os.makedirs(model_directory)
-    models = os.listdir(model_directory)
-    return jsonify({'models': models}), 200
+@app.route('/upload_model', methods=['POST'])
+@requires_auth
+@requires_data
+def upload_model():
+    data = request.json if request.is_json else request.form
+    version = data.get('version')
+    if not version:
+        return jsonify({"message": "Model version is required"}), 400
+    model_file = request.files['model']
 
-@app.route('/remove_model', methods=['POST'])
-@auth.login_required
+    # Define the directory path
+    model_dir = os.path.join(MODEL_DIR, version)
+
+    # Create the directory if it doesn't exist
+    os.makedirs(model_dir, exist_ok=True)
+
+    # Save the model file
+    model_file.save(f'{MODEL_DIR}/{version}/{model_file.filename}')
+    return jsonify({'message': f'Model {version} uploaded successfully'}), 200
+
+@app.route('/remove_model', methods=['DELETE'])
+@requires_auth
+@requires_data
 def remove_model():
-    model_filename = request.json.get('model_filename')
-    if not model_filename:
-        return jsonify({'error': 'No model filename provided'}), 400
+    data = request.json if request.is_json else request.form
+    model_name = data.get('model_name')
+    if not model_name:
+        return jsonify({"message": "Model name to remove is required"}), 400
+    version = data.get('version')
+    if not version:
+        return jsonify({"message": "Model version is required"}), 400
 
-    file_path = os.path.join(model_directory, model_filename)
-    if os.path.exists(file_path):
-        os.remove(file_path)
-        return jsonify({'message': f'Model {model_filename} removed successfully'}), 200
+    model_dir = f'{MODEL_DIR}/{version}'
+    model_file = f'{MODEL_DIR}/{version}/{model_name}'
+
+    if os.path.exists(model_file):
+        try:
+            os.remove(model_file)
+            dir_contents = os.listdir(model_dir)
+            if not dir_contents:
+                os.rmdir(model_dir)
+        except Exception as e:
+            return jsonify({'message': str(e)}), 500
     else:
-        return jsonify({'error': 'Model file not found'}), 404
+        return jsonify({'message': f'Model {model_name} not found '
+                       f'for version {version}'}), 404
+    return jsonify({'message': f'Removed model name '
+                   f'{model_name} for version {version}'}), 200
 
 @app.route('/predict', methods=['POST'])
-@auth.login_required
+@requires_auth
+@requires_data
 def predict():
-    model_filename = request.json.get('model_filename')
-    if not model_filename:
-        return jsonify({'error': 'No model filename provided'}), 400
+    data = request.json if request.is_json else request.form
 
-    model_path = os.path.join(model_directory, model_filename)
+    version = data.get('version')
+    if not version:
+        return jsonify({'message': 'Model version required.'}), 400
+
+    model_name = data.get('model_name')
+    if not model_name:
+        return jsonify({'message': 'Model name is required'}), 400
+
+    model_path = os.path.join(MODEL_DIR, version, model_name)
+    
     if not os.path.exists(model_path):
-        return jsonify({'error': 'Model file not found'}), 404
+        #return jsonify({f'message': 'Model {model_name} not found '
+        return jsonify({f'message': 'Model ' + model_name + ' not found '
+                        f'for version {version}'}), 404
 
-    model = load_model_from_file(model_path)
-    data = request.json.get('data')
-    if not data:
-        return jsonify({'error': 'No data provided'}), 400
+    # Load the model
+    with open(model_path, 'rb') as f:
+        model = joblib.load(f)
+    
+    # Adjust based on your model input format
+    features = data.get('features') or data.get('data')
+    
+    if not features:
+        return jsonify({'message': 'No features or data provided'}), 400
 
-    try:
-        prediction = model.predict([data])
-        return jsonify({'prediction': prediction.tolist()}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    # Perform prediction
+    prediction = model.predict([features])
+    
+    return jsonify({'prediction': prediction.tolist()}), 200
+
+@app.route('/list_models', methods=['GET'])
+@requires_auth
+def list_models():
+    models = {}
+    if os.path.exists(MODEL_DIR):
+        for version in os.listdir(MODEL_DIR):
+            version_path = os.path.join(MODEL_DIR, version)
+            if os.path.isdir(version_path):
+                models[version] = [f for f in os.listdir(version_path)]
+    return jsonify(models), 200
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=True)

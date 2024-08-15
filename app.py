@@ -1,15 +1,36 @@
 from flask import Flask, request, jsonify
+from flask_httpauth import HTTPBasicAuth
+
 import pickle
 import os
 
 app = Flask(__name__)
+auth = HTTPBasicAuth()
+
 model_directory = 'models'  # Directory where models will be stored
+
+# Dummy user store
+users = {
+    "admin": "password"  # Replace with environment variables or a secure store in production
+}
+
+@auth.get_password
+def get_password(username):
+    if username in users:
+        return users.get(username)
+    return None
 
 def load_model_from_file(filename):
     with open(filename, 'rb') as f:
         return pickle.load(f)
 
+@app.route('/')
+@auth.login_required
+def index():
+    return "Welcome to the ML Model Deployment Tool!"
+
 @app.route('/upload_model', methods=['POST'])
+@auth.login_required
 def upload_model():
     model_file = request.files.get('model')
     if not model_file:
@@ -24,6 +45,7 @@ def health_check():
     return jsonify({'status': 'ok'}), 200
 
 @app.route('/list_models', methods=['GET'])
+@auth.login_required
 def list_models():
     if not os.path.exists(model_directory):
         os.makedirs(model_directory)
@@ -31,6 +53,7 @@ def list_models():
     return jsonify({'models': models}), 200
 
 @app.route('/remove_model', methods=['POST'])
+@auth.login_required
 def remove_model():
     model_filename = request.json.get('model_filename')
     if not model_filename:
@@ -44,6 +67,7 @@ def remove_model():
         return jsonify({'error': 'Model file not found'}), 404
 
 @app.route('/predict', methods=['POST'])
+@auth.login_required
 def predict():
     model_filename = request.json.get('model_filename')
     if not model_filename:

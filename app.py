@@ -1,13 +1,28 @@
-from flask import Flask, request, jsonify, send_file
 import os
 import joblib
 import json
 import logging
 import functools
+import re
 import time
 
 
+from flask import Flask, request, jsonify, send_file
+from flasgger import Swagger
+from werkzeug.utils import secure_filename
+
+
 app = Flask(__name__)
+
+
+# For API documentation.
+swagger = Swagger(app, template={
+    "securityDefinitions": {
+        "basicAuth": {
+            "type": "basic"
+        }
+    }
+})
 
 
 logging.basicConfig(level=logging.INFO)
@@ -49,6 +64,27 @@ def requires_data(f):
     return decorated_function
 
 
+# Sanitize filename by removing any potentially dangerous characters
+def sanitize_filename(filename):
+    return re.sub(r'[^\w\s.-]', '', filename).strip()
+
+# Clean up input data by trimming whitespace from string values
+def sanitize_input(data):
+    return {key: value.strip() if isinstance(value, str) else value for key, value in data.items()}
+
+@app.errorhandler(400)
+def bad_request(error):
+    return jsonify({"error": "Bad Request", "message": str(error)}), 400
+
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({"error": "Not Found", "message": str(error)}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({"error": "Internal Server Error", "message": str(error)}), 500
+
+
 @app.route('/health_check', methods=['GET'])
 def health_check():
     return jsonify({"message": "App is running"}), 200
@@ -58,11 +94,43 @@ def health_check():
 @requires_auth
 @requires_data
 def upload_model():
+    """
+    Upload a machine learning model.
+    ---
+    security:
+      - basicAuth: []
+    parameters:
+      - name: version
+        in: formData
+        type: string
+        required: true
+        description: The version of the model.
+      - name: model
+        in: formData
+        type: file
+        required: true
+        description: The model file to upload.
+    responses:
+      200:
+        description: Model uploaded successfully
+      400:
+        description: Invalid input or missing version/model file
+    """
     data = request.json if request.is_json else request.form
+    data = sanitize_input(data)  # Clean up data
+
     version = data.get('version')
-    if not version:
-        return jsonify({"message": "Model version is required"}), 400
-    model_file = request.files['model']
+    if not version or not isinstance(version, str):
+        return bad_request("Valid model version is required")
+
+    model_file = request.files.get('model_file')
+    if not model_file:
+        return bad_request("Model file is required")
+
+    # Sanitize model filename
+    filename = sanitize_filename(model_file.filename)
+    if not filename:
+        return bad_request("Invalid model file name")
 
     # Define the directory path
     model_dir = os.path.join(MODEL_DIR, version)
@@ -70,15 +138,49 @@ def upload_model():
     # Create the directory if it doesn't exist
     os.makedirs(model_dir, exist_ok=True)
 
-    # Save the model file
-    model_file.save(f'{MODEL_DIR}/{version}/{model_file.filename}')
-    return jsonify({'message': f'Model {version} uploaded successfully'}), 200
+    # Save the model file securely
+    file_path = os.path.join(model_dir, secure_filename(filename))
+    try:
+        model_file.save(file_path)
+    except Exception as e:
+        return internal_error(f"Error saving model file: {str(e)}")
+
+    return jsonify({'message': f'Version {version} of model '
+                    f'{model_file.filename} uploaded successfully'}), 200
 
 
 @app.route('/retrieve_model', methods=['GET'])
 @requires_auth
 @requires_data
 def retrieve_model():
+    """
+    Retrieve a machine learning model file.
+    ---
+    security:
+      - basicAuth: []
+    parameters:
+      - name: model_filename
+        in: query
+        type: string
+        required: true
+        description: The name of the model to retrieve.
+      - name: version
+        in: query
+        type: string
+        required: true
+        description: The version of the model to retrieve.
+    responses:
+      200:
+        description: The requested model file
+        schema:
+          type: file
+      400:
+        description: Invalid input or missing model_filename/version
+      404:
+        description: Model not found
+      500:
+        description: Internal server error while retrieving the model
+    """
     data = request.json if request.is_json else request.form
     version = data.get('version')
     model_filename = data.get('model_filename')
@@ -88,14 +190,11 @@ def retrieve_model():
 
     # Construct the path to the model file
     model_path = os.path.join(MODEL_DIR, version, model_filename)
-    print ('model_path: %s' % model_path)
 
     # Check if the model file exists
     if os.path.exists(model_path):
-        print ('yes model file {model_path} exists')
         return send_file(model_path, as_attachment=True)
     else:
-        print ('no model file {model_path} does not exist')
         return jsonify({'message': f'Model {model_filename} version {version} not found'}), 404
 
 
@@ -103,16 +202,42 @@ def retrieve_model():
 @requires_auth
 @requires_data
 def remove_model():
+    """
+    Remove a machine learning model.
+    ---
+    security:
+      - basicAuth: []
+    parameters:
+      - name: model_filename
+        in: formData
+        type: string
+        required: true
+        description: The name of the model to be removed.
+      - name: version
+        in: formData
+        type: string
+        required: true
+        description: The version of the model to be removed.
+    responses:
+      200:
+        description: Model removed successfully
+      400:
+        description: Model name or version is missing
+      404:
+        description: Model not found
+      500:
+        description: Internal server error while removing the model
+    """
     data = request.json if request.is_json else request.form
-    model_name = data.get('model_name')
-    if not model_name:
-        return jsonify({"message": "Model name to remove is required"}), 400
+    model_filename = data.get('model_filename')
+    if not model_filename:
+        return jsonify({"message": "Model filename to remove is required"}), 400
     version = data.get('version')
     if not version:
         return jsonify({"message": "Model version is required"}), 400
 
     model_dir = f'{MODEL_DIR}/{version}'
-    model_file = f'{MODEL_DIR}/{version}/{model_name}'
+    model_file = f'{MODEL_DIR}/{version}/{model_filename}'
 
     if os.path.exists(model_file):
         try:
@@ -123,33 +248,70 @@ def remove_model():
         except Exception as e:
             return jsonify({'error': str(e)}), 500
     else:
-        return jsonify({'error': f'Model {model_name} not found '
+        return jsonify({'error': f'Model {model_filename} not found '
                        f'for version {version}'}), 404
     return jsonify({'message': f'Removed model name '
-                   f'{model_name} for version {version}'}), 200
+                   f'{model_filename} for version {version}'}), 200
 
 
 @app.route('/predict', methods=['POST'])
 @requires_auth
 @requires_data
 def predict():
+    """
+    Predict using a machine learning model.
+    ---
+    security:
+      - basicAuth: []
+    parameters:
+      - name: data
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            data:
+              type: array
+              items:
+                type: number
+              description: The input data for prediction.
+            model_filename:
+              type: string
+              description: The filename of the model to use for prediction.
+          required:
+            - data
+            - model_filename
+    responses:
+      200:
+        description: Prediction result
+        schema:
+          type: object
+          properties:
+            prediction:
+              type: number
+              description: The result of the prediction.
+      400:
+        description: Invalid input or missing model_filename/data
+      404:
+        description: Model not found
+      500:
+        description: Internal server error during prediction
+    """
     data = request.json if request.is_json else request.form
 
     version = data.get('version')
     if not version:
         return jsonify({'error': 'Model version required.'}), 400
 
-    model_name = data.get('model_name')
-    if not model_name:
-        return jsonify({'error': 'Model name is required'}), 400
+    model_filename = data.get('model_filename')
+    if not model_filename:
+        return jsonify({'error': 'Model filename is required'}), 400
 
 
-    model_path = os.path.join(MODEL_DIR, version, model_name)
+    model_path = os.path.join(MODEL_DIR, version, model_filename)
 
-    print (f'model_path: {model_path}')
-    
     if not os.path.exists(model_path):
-        return jsonify({f'error': 'Model ' + model_name + ' not found '
+        return jsonify({f'error': 'Model ' + model_filename + ' not found '
                         f'for version {version}'}), 404
 
     # Load the model
@@ -171,6 +333,27 @@ def predict():
 @app.route('/list_models', methods=['GET'])
 @requires_auth
 def list_models():
+    """
+    List all available machine learning models.
+    ---
+    security:
+      - basicAuth: []
+    responses:
+      200:
+        description: A list of available models
+        schema:
+          type: object
+          properties:
+            models:
+              type: array
+              items:
+                type: string
+              description: List of model filenames.
+      401:
+        description: Unauthorized, authentication required
+      500:
+        description: Internal server error while retrieving the model list
+    """
     models = {}
     if os.path.exists(MODEL_DIR):
         for version in os.listdir(MODEL_DIR):
@@ -214,7 +397,7 @@ def log_request_info(response):
 
         # Get data from request.json
         json_data = request.get_json(silent=True) if request.is_json else None
-        json_str = json.dumps(json_data) if json_data else "No JSON data"
+        json_str = json.dumps(json_data) if json_data else ''
 
         # Get data from request.form
         form_data = request.form.to_dict()
@@ -225,12 +408,13 @@ def log_request_info(response):
             f"Request to {request.endpoint} - Method: {request.method}, "
             f"Path: {request.path}, Duration: {duration:.2f} seconds, "
             f"Status Code: {response.status_code}, "
-            f"JSON Data: {json_str}, "
         )
+        if json_str:
+            log_message += f"JSON Data: {json_str}, "
 
         if request.endpoint == 'upload_model':
             # Get file information
-            model_file = request.files.get('model')
+            model_file = request.files.get('model_file')
             model_filename = model_file.filename if model_file else "No file uploaded"
 
             log_message += f"Form Data: {form_str}, "

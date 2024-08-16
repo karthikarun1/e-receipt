@@ -42,34 +42,6 @@ def authenticate():
     return jsonify({"message": "Authentication required"}), 401
 
 
-def requires_auth(f):
-    @functools.wraps(f)
-    def decorated(*args, **kwargs):
-        auth = request.authorization
-        if not auth or not check_auth(auth.username, auth.password):
-            return authenticate()
-        return f(*args, **kwargs)
-    return decorated
-
-
-def requires_data(f):
-    @functools.wraps(f)
-    def decorated_function(*args, **kwargs):
-        # Check if data exists in JSON or form for POST, PUT, DELETE
-        if request.method in ['POST', 'PUT', 'DELETE']:
-            data = request.json if request.is_json else request.form
-            if not data:
-                return jsonify({"error": "Bad Request",
-                                "message": "Request data is missing."}), 400
-        # Check if data exists in args for GET requests
-        elif request.method == 'GET':
-            if not request.args:
-                return jsonify({"error": "Bad Request",
-                                "message": "Request data is missing."}), 400
-        return f(*args, **kwargs)
-    return decorated_function
-
-
 # Sanitize filename by removing any potentially dangerous characters
 def sanitize_filename(filename):
     return re.sub(r'[^\w\s.-]', '', filename).strip()
@@ -89,6 +61,32 @@ def not_found(error):
 @app.errorhandler(500)
 def internal_error(error):
     return jsonify({"error": "Internal Server Error", "message": str(error)}), 500
+
+
+def requires_auth(f):
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*args, **kwargs)
+    return decorated
+
+
+def requires_data(f):
+    @functools.wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Check if data exists in JSON, form, or files for POST, PUT, DELETE
+        if request.method in ['POST', 'PUT', 'DELETE']:
+            data = request.json if request.is_json else request.form
+            if not data and not request.files:
+                return bad_request('Request data is missing')
+        # Check if data exists in args for GET requests
+        elif request.method == 'GET':
+            if not request.args:
+                return bad_request('Request data is missing')
+        return f(*args, **kwargs)
+    return decorated_function
 
 
 @app.route('/health_check', methods=['GET'])
@@ -191,7 +189,7 @@ def retrieve_model():
     version = request.args.get('version')
 
     if not version or not model_filename:
-        return jsonify({"message": "Model version and filename are required"}), 400
+        return bad_request('Model version and filename are required')
 
     # Construct the path to the model file
     model_path = os.path.join(MODEL_DIR, version, model_filename)
@@ -200,7 +198,7 @@ def retrieve_model():
     if os.path.exists(model_path):
         return send_file(model_path, as_attachment=True)
     else:
-        return jsonify({'message': f'Model {model_filename} version {version} not found'}), 404
+        return not_found(f'Model {model_filename} version {version} not found')
 
 
 @app.route('/remove_model', methods=['DELETE'])
@@ -236,10 +234,10 @@ def remove_model():
     data = request.json if request.is_json else request.form
     model_filename = data.get('model_filename')
     if not model_filename:
-        return jsonify({"message": "Model filename to remove is required"}), 400
+        return bad_request('Model filename to remove is required')
     version = data.get('version')
     if not version:
-        return jsonify({"message": "Model version is required"}), 400
+        return bad_request('Model version is required')
 
     model_dir = f'{MODEL_DIR}/{version}'
     model_file = f'{MODEL_DIR}/{version}/{model_filename}'
@@ -251,10 +249,10 @@ def remove_model():
             if not dir_contents:
                 os.rmdir(model_dir)
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            return internal_error(str(e))
     else:
-        return jsonify({'error': f'Model {model_filename} not found '
-                       f'for version {version}'}), 404
+        return not_found(f'Model {model_filename} not found '
+                         f'for version {version}')
     return jsonify({'message': f'Removed model name '
                    f'{model_filename} for version {version}'}), 200
 
@@ -306,18 +304,18 @@ def predict():
 
     version = data.get('version')
     if not version:
-        return jsonify({'error': 'Model version required.'}), 400
+        return bad_request('Model version required.')
 
     model_filename = data.get('model_filename')
     if not model_filename:
-        return jsonify({'error': 'Model filename is required'}), 400
+        return bad_request('Model filename is required')
 
 
     model_path = os.path.join(MODEL_DIR, version, model_filename)
 
     if not os.path.exists(model_path):
-        return jsonify({f'error': 'Model ' + model_filename + ' not found '
-                        f'for version {version}'}), 404
+        return not_found(f'Model ' + model_filename + ' not found '
+                         f'for version {version}')
 
     # Load the model
     with open(model_path, 'rb') as f:
@@ -327,7 +325,7 @@ def predict():
     features = data.get('features') or data.get('data')
     
     if not features:
-        return jsonify({'error': 'No features or data provided'}), 400
+        return bad_request('No features or data provided')
 
     # Perform prediction
     prediction = model.predict([features])

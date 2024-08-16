@@ -55,11 +55,17 @@ def requires_auth(f):
 def requires_data(f):
     @functools.wraps(f)
     def decorated_function(*args, **kwargs):
-        # Check if data exists in JSON or form
-        data = request.json if request.is_json else request.form
-        if not data:
-            return jsonify({"error": "Bad Request", 
-                            "message": "Request data is missing."}), 400
+        # Check if data exists in JSON or form for POST, PUT, DELETE
+        if request.method in ['POST', 'PUT', 'DELETE']:
+            data = request.json if request.is_json else request.form
+            if not data:
+                return jsonify({"error": "Bad Request",
+                                "message": "Request data is missing."}), 400
+        # Check if data exists in args for GET requests
+        elif request.method == 'GET':
+            if not request.args:
+                return jsonify({"error": "Bad Request",
+                                "message": "Request data is missing."}), 400
         return f(*args, **kwargs)
     return decorated_function
 
@@ -151,7 +157,7 @@ def upload_model():
 
 @app.route('/retrieve_model', methods=['GET'])
 @requires_auth
-@requires_data
+#@requires_data
 def retrieve_model():
     """
     Retrieve a machine learning model file.
@@ -181,9 +187,8 @@ def retrieve_model():
       500:
         description: Internal server error while retrieving the model
     """
-    data = request.json if request.is_json else request.form
-    version = data.get('version')
-    model_filename = data.get('model_filename')
+    model_filename = request.args.get('model_filename')
+    version = request.args.get('version')
 
     if not version or not model_filename:
         return jsonify({"message": "Model version and filename are required"}), 400

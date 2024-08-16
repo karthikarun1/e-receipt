@@ -9,10 +9,17 @@ import time
 
 from flask import Flask, request, jsonify, send_file
 from flasgger import Swagger
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from werkzeug.utils import secure_filename
 
 
 app = Flask(__name__)
+
+app.config['JWT_SECRET_KEY'] = 'your_jwt_secret_key'
+jwt = JWTManager(app)
+
+# Sample user data (in real applications, use a database)
+jwt_users = {"admin": "pass1"}
 
 
 # For API documentation.
@@ -31,6 +38,48 @@ app.logger.addHandler(logging.StreamHandler())
 
 # Directory to store models
 MODEL_DIR = "models"
+
+@app.route('/login', methods=['POST'])
+def login():
+    """
+    User login
+    ---
+    parameters:
+      - name: username
+        in: body
+        required: true
+        schema:
+          type: string
+      - name: password
+        in: body
+        required: true
+        schema:
+          type: string
+    responses:
+      200:
+        description: Successful login
+      401:
+        description: Invalid credentials
+    """
+    username = request.json.get('username', None)
+    password = request.json.get('password', None)
+
+    # validate from database 
+    #user = User.query.filter_by(username=username).first()
+    #if user and check_password_hash(user.password_hash, password):
+    #    access_token = create_access_token(identity={'username': user.username})
+    #    return jsonify(access_token=access_token), 200
+    #else:
+    #    return jsonify({'msg': 'Invalid credentials'}), 401
+
+    # validate from users dict 
+    if jwt_users.get(username) == password:
+        # Create JWT token if credentials are valid
+        access_token = create_access_token(identity={'username': username})
+        return jsonify(access_token=access_token), 200
+    else:
+        # Return 401 Unauthorized if credentials are invalid
+        return jsonify({'msg': 'Invalid credentials'}), 401
 
 
 # Basic authentication
@@ -95,7 +144,7 @@ def health_check():
 
 
 @app.route('/upload_model', methods=['POST'])
-@requires_auth
+@jwt_required()
 @requires_data
 def upload_model():
     """
@@ -120,6 +169,8 @@ def upload_model():
       400:
         description: Invalid input or missing version/model file
     """
+    current_user = get_jwt_identity()
+
     data = request.json if request.is_json else request.form
     data = sanitize_input(data)  # Clean up data
 

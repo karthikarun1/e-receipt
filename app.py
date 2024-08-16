@@ -148,26 +148,31 @@ def health_check():
 @requires_data
 def upload_model():
     """
-    Upload a machine learning model.
+    Upload a model
     ---
     security:
-      - basicAuth: []
+      - JWT: []
     parameters:
+      - name: model_name
+        in: formData
+        type: string
+        description: Name of the model
+        required: true
       - name: version
         in: formData
         type: string
+        description: Version of the model
         required: true
-        description: The version of the model.
-      - name: model
+      - name: model_file
         in: formData
         type: file
+        description: The model file to upload
         required: true
-        description: The model file to upload.
     responses:
       200:
         description: Model uploaded successfully
-      400:
-        description: Invalid input or missing version/model file
+      401:
+        description: Unauthorized, token missing or invalid
     """
     current_user = get_jwt_identity()
 

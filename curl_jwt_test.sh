@@ -6,33 +6,9 @@ set -e
 # Get endpoint. Assign default "all" if no value was provided.
 endpoint=${1:-"all"} 
 
-# default values for upload
-model_filename=${2:-"sample_model.pkl"}
-version=${3:-"v0"}
-
-# Check if the endpoint is 'upload'
-if [[ "$endpoint" == "upload" ]]; then
-  # Check if both model_filename and version are provided
-  model_filename=${2:-"sample_model.pkl"}
-  version=${3:-"v0"}
-  if [[ -z "$model_filename" || -z "$version" ]]; then
-    echo "Error: Both model_filename and version are required for the 'upload' endpoint."
-    exit 1
-  fi
-fi
-
 TOKEN=$(curl -s -X POST http://localhost:5000/login \
     -H "Content-Type: application/json" \
     -d '{"username": "admin", "password": "pass1"}' | jq -r '.access_token')
-
-if [[ "$endpoint" == "upload" || "$endpoint" == "all" ]]; then
-# Test /upload_model endpoint using the generated token
-curl -X POST http://localhost:5000/upload_model \
-    -H "Authorization: Bearer ${TOKEN}" \
-    -H "Content-Type: multipart/form-data" \
-    -F "version=$version" \
-    -F "model_file=@$model_filename"
-fi
 
 if [[ "$endpoint" == "list" || "$endpoint" == "all" ]]; then
 curl -X GET http://localhost:5000/list_models -H "Authorization: Bearer ${TOKEN}" 

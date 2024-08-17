@@ -7,7 +7,7 @@ import re
 import tempfile
 import time
 
-
+from datetime import datetime
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify, send_file
 from flasgger import Swagger
@@ -181,6 +181,45 @@ def validate_model(model_file):
         return False
 
 
+def create_model_metadata(model_filename, version, description=None,
+                          accuracy=None, current_user=None):
+    """
+    Creates and saves metadata for the uploaded model.
+
+    Args:
+        model_filename (str): The filename of the uploaded model.
+        version (str): The version of the uploaded model.
+        description (str, optional): Description of the model.
+        accuracy (float, optional): Accuracy of the model.
+        current_user (str, optional): Username of the person uploading the model.
+
+    Returns:
+        str: Path to the metadata file.
+    """
+    # Extract model name and version
+    model_name, _ = os.path.splitext(secure_filename(model_filename))
+    
+    # Generate metadata
+    metadata = {
+        'model_name': model_filename,
+        'version': version,
+        'description': description or 'No description provided',
+        'accuracy': accuracy if accuracy is not None else 'Accuracy not provided',
+        'created_by': current_user or 'Unknown',
+        'created_at': datetime.utcnow().isoformat()
+    }
+
+    # Define metadata file path
+    metadata_filename = f"{model_name}_{version}_metadata.json"  # Adjust versioning as needed
+    metadata_path = os.path.join('models', metadata_filename)
+    
+    # Save metadata to file
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=4)
+    
+    return metadata_path
+
+
 @app.route('/upload_model', methods=['POST'])
 @jwt_required()
 @requires_data
@@ -225,6 +264,7 @@ def upload_model():
     if not model_file:
         return bad_request("Model file is required")
 
+
     # Sanitize model filename
     filename = sanitize_filename(model_file.filename)
     if not filename:
@@ -233,6 +273,16 @@ def upload_model():
     # Validate the model
     if not validate_model(model_file):
         return jsonify({"error": "Invalid model file"}), 400
+
+    description = data.get('description')
+    accuracy = data.get('accuracy')
+
+    # Validate accuracy if provided
+    if accuracy:
+        try:
+            accuracy = float(accuracy)
+        except ValueError:
+            return jsonify({"error": "Invalid accuracy value"}), 400
 
     # Define the directory path
     model_dir = os.path.join(MODEL_DIR, version)
@@ -247,8 +297,13 @@ def upload_model():
     except Exception as e:
         return internal_error(f"Error saving model file: {str(e)}")
 
+    # Create model metadata
+    metadata_path = create_model_metadata(
+            filename, version, description, accuracy, current_user)
+
     return jsonify({'message': f'Version {version} of model '
-                    f'{model_file.filename} uploaded successfully'}), 200
+                    f'{model_file.filename} uploaded successfully',
+                    'metadata_path': metadata_path}), 201
 
 
 @app.route('/retrieve_model', methods=['GET'])

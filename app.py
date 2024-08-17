@@ -210,14 +210,14 @@ def upload_model():
 
 
 @app.route('/retrieve_model', methods=['GET'])
-@requires_auth
+@jwt_required()
 #@requires_data
 def retrieve_model():
     """
     Retrieve a machine learning model file.
     ---
     security:
-      - basicAuth: []
+      - JWT: []
     parameters:
       - name: model_filename
         in: query
@@ -241,8 +241,15 @@ def retrieve_model():
       500:
         description: Internal server error while retrieving the model
     """
-    model_filename = request.args.get('model_filename')
-    version = request.args.get('version')
+    current_user = get_jwt_identity()
+
+    data = request.json if request.is_json else request.form
+
+    #model_filename = request.args.get('model_filename')
+    #version = request.args.get('version')
+
+    model_filename = data.get('model_filename')
+    version = data.get('version')
 
     if not version or not model_filename:
         return bad_request('Model version and filename are required')
@@ -258,14 +265,14 @@ def retrieve_model():
 
 
 @app.route('/remove_model', methods=['DELETE'])
-@requires_auth
+@jwt_required()
 @requires_data
 def remove_model():
     """
     Remove a machine learning model.
     ---
     security:
-      - basicAuth: []
+      - JWT: []
     parameters:
       - name: model_filename
         in: formData
@@ -287,8 +294,11 @@ def remove_model():
       500:
         description: Internal server error while removing the model
     """
+    current_user = get_jwt_identity()
+
     data = request.json if request.is_json else request.form
     model_filename = data.get('model_filename')
+
     if not model_filename:
         return bad_request('Model filename to remove is required')
     version = data.get('version')
@@ -314,14 +324,14 @@ def remove_model():
 
 
 @app.route('/predict', methods=['POST'])
-@requires_auth
+@jwt_required()
 @requires_data
 def predict():
     """
     Predict using a machine learning model.
     ---
     security:
-      - basicAuth: []
+      - JWT: []
     parameters:
       - name: data
         in: body
@@ -356,6 +366,8 @@ def predict():
       500:
         description: Internal server error during prediction
     """
+    current_user = get_jwt_identity()
+
     data = request.json if request.is_json else request.form
 
     version = data.get('version')
@@ -390,13 +402,13 @@ def predict():
 
 
 @app.route('/list_models', methods=['GET'])
-@requires_auth
+@jwt_required()
 def list_models():
     """
     List all available machine learning models.
     ---
     security:
-      - basicAuth: []
+      - JWT: []
     responses:
       200:
         description: A list of available models
@@ -413,7 +425,10 @@ def list_models():
       500:
         description: Internal server error while retrieving the model list
     """
+    current_user = get_jwt_identity()
+
     models = {}
+
     if os.path.exists(MODEL_DIR):
         for version in os.listdir(MODEL_DIR):
             version_path = os.path.join(MODEL_DIR, version)

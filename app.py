@@ -4,9 +4,11 @@ import json
 import logging
 import functools
 import re
+import tempfile
 import time
 
 
+from dotenv import load_dotenv
 from flask import Flask, request, jsonify, send_file
 from flasgger import Swagger
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
@@ -35,6 +37,9 @@ swagger = Swagger(app, template={
 logging.basicConfig(level=logging.INFO)
 app.logger.addHandler(logging.StreamHandler())
 
+# Configuration to control detailed logging
+load_dotenv()
+DETAILED_LOGGING = os.getenv('DETAILED_LOGGING', 'false').lower() == 'true'
 
 # Directory to store models
 MODEL_DIR = "models"
@@ -143,6 +148,39 @@ def health_check():
     return jsonify({"message": "App is running"}), 200
 
 
+@app.route('/check_logging')
+def check_logging():
+    return f"DETAILED_LOGGING is set to: {DETAILED_LOGGING}\n"
+
+
+def validate_model(model_file):
+    """
+    Validate the model file by attempting to load it with joblib.
+
+    Args:
+        model_file (werkzeug.datastructures.FileStorage): The uploaded model file object.
+
+    Returns:
+        bool: True if the model is valid, False otherwise.
+    """
+    try:
+        # Create a temporary file to save the uploaded model
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            model_file.save(temp_file.name)
+            temp_file_path = temp_file.name
+
+        # Attempt to load the model
+        with open(temp_file_path, 'rb') as f:
+            joblib.load(f)
+
+        # Remove the temporary file after validation
+        os.remove(temp_file_path)
+        return True
+    except Exception as e:
+        app.logger.error(f"Model validation failed: {str(e)}")
+        return False
+
+
 @app.route('/upload_model', methods=['POST'])
 @jwt_required()
 @requires_data
@@ -191,6 +229,10 @@ def upload_model():
     filename = sanitize_filename(model_file.filename)
     if not filename:
         return bad_request("Invalid model file name")
+
+    # Validate the model
+    if not validate_model(model_file):
+        return jsonify({"error": "Invalid model file"}), 400
 
     # Define the directory path
     model_dir = os.path.join(MODEL_DIR, version)
@@ -452,18 +494,6 @@ def start_timer():
         request.start_time = time.time()
 
 
-@app.before_request
-def start_timer():
-    if request.endpoint != 'list_models':
-        request.start_time = time.time()
-
-
-@app.before_request
-def start_timer():
-    if request.endpoint != 'list_models':
-        request.start_time = time.time()
-
-
 @app.after_request
 def log_request_info(response):
     if request.endpoint != 'list_models':
@@ -493,6 +523,23 @@ def log_request_info(response):
 
             log_message += f"Form Data: {form_str}, "
             log_message += f"Model Filename: {model_filename}"
+
+        # Additional logging for the predict endpoint
+        if request.endpoint == 'predict' and json_data:
+            model_name = json_data.get('model_filename', 'unknown_model')
+            model_version = json_data.get('version', 'unknown_version')
+            log_message += (
+                f", Model: {model_name}, Version: {model_version}, "
+                f"Prediction Time: {duration:.2f} seconds, "
+            )
+
+        print (f'DETAILED_LOGGING {DETAILED_LOGGING}')
+        if DETAILED_LOGGING:
+            # Log user identity and IP address
+            user_info = request.remote_addr
+            log_message += f"User IP: {user_info}, "
+            user_agent = request.headers.get('User-Agent', 'Unknown')
+            log_message += f"User-Agent: {user_agent}"
 
         app.logger.info(log_message)
     return response

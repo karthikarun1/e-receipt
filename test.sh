@@ -117,6 +117,34 @@ EOF
 )
 perform_test "$command" "$expected_output"
 
+
+command="./predict.sh --model_name sample --version v1 --expected_output 1"
+expected_output=$(cat <<EOF
+{
+  "accuracy": "True",
+  "prediction": [
+    1
+  ]
+}
+
+EOF
+)
+perform_test "$command" "$expected_output"
+
+command="./predict.sh --model_name sample --version v1 --expected_output 5"
+expected_output=$(cat <<EOF
+{
+  "accuracy": "False",
+  "prediction": [
+    1
+  ]
+}
+
+EOF
+)
+perform_test "$command" "$expected_output"
+
+
 command="./predict.sh --model_name sample --version v2"
 expected_output=$(cat <<EOF
 {

@@ -45,6 +45,8 @@ DETAILED_LOGGING = os.getenv('DETAILED_LOGGING', 'false').lower() == 'true'
 # Directory to store models
 MODEL_DIR = "models"
 
+USAGE_LOG_FILE_NAME='usage_logs.txt'
+
 @app.route('/login', methods=['POST'])
 def login():
     """
@@ -415,63 +417,32 @@ def remove_model(model_name, version):
     return jsonify({'message': f'Removed model {model_filename} and metadata'}), 200
 
 
-@app.route('/remove_model/<string:model_name>/<string:version>', methods=['DELETE'])
-@jwt_required()
-def remove_model1(model_name, version):
+def evaluate_prediction(model, input_data, expected_output=None):
     """
-    Remove a machine learning model.
-    ---
-    security:
-      - JWT: []
-    parameters:
-      - name: model_filename
-        in: formData
-        type: string
-        required: true
-        description: The name of the model to be removed.
-      - name: version
-        in: formData
-        type: string
-        required: true
-        description: The version of the model to be removed.
-    responses:
-      200:
-        description: Model removed successfully
-      400:
-        description: Model name or version is missing
-      404:
-        description: Model not found
-      500:
-        description: Internal server error while removing the model
+    Evaluate the model's prediction and optionally compare it to expected output.
+
+    Args:
+        model (object): The loaded model.
+        input_data (dict): The input data for the prediction.
+        expected_output (any, optional): The expected output to compare against.
+
+    Returns:
+        dict: A dictionary containing prediction results and accuracy (if applicable).
     """
-    current_user = get_jwt_identity()
+    prediction = model.predict([input_data])
+    result = {
+        'prediction': prediction,
+    }
 
-    if not model_name or not version:
-        return bad_request("Model name and version are required")
+    if expected_output is not None:
+        accuracy = None
+        try:
+            accuracy = prediction[0] == expected_output  # Simple accuracy check
+        except Exception as e:
+            app.logger.error(f"Error evaluating accuracy: {str(e)}")
+        result['accuracy'] = accuracy
 
-    metadata_path = os.path.join(MODEL_DIR, f'{model_name}_{version}_metadata.json')
-    
-    # Check if the metadata file exists
-    if not os.path.exists(metadata_path):
-        return not_found(f'Metadata for model {model_name} version {version} not found')
-
-    try:
-        # Load metadata to get the file extension
-        with open(metadata_path, 'r') as f:
-            metadata = json.load(f)
-            file_extension = metadata.get('file_extension', 'pkl')  # Default to 'pkl' if not found
-        
-        model_filename = f'{model_name}_{version}.{file_extension}'
-        model_file_path = os.path.join(MODEL_DIR, model_filename)
-        
-        if os.path.exists(model_file_path):
-            os.remove(model_file_path)
-            return jsonify({'message': f'Removed model {model_filename}'}), 200
-        else:
-            return not_found(f'Model {model_filename} not found')
-
-    except Exception as e:
-        return internal_error(f'Error processing request: {str(e)}')
+    return result
 
 
 @app.route('/predict/<string:model_name>/<string:version>', methods=['POST'])
@@ -548,10 +519,27 @@ def predict(model_name, version):
     if not features:
         return bad_request('No features or data provided')
 
-    # Perform prediction
-    prediction = model.predict([features])
-    
-    return jsonify({'prediction': prediction.tolist()}), 200
+    expected_output = data.get('expected_output', None)
+    result = evaluate_prediction(model, features, expected_output)
+
+    # Log usage
+    if os.getenv('LOG_MODEL_USAGE', 'False').lower() == 'true':
+        log_model_usage(model_name, version, features,
+                        result['prediction'].tolist(), result.get('accuracy'))
+  
+    if expected_output: 
+        return jsonify({'prediction': result['prediction'].tolist(),
+                        'accuracy': str(result['accuracy'])}), 200
+    else:
+        return jsonify({'prediction': result['prediction'].tolist()}), 200
+
+
+def log_model_usage(model_name, version, input_data, output, prediction_accuracy):
+    log_entry = (f'{time.strftime('%Y-%m-%d %H:%M:%S')} - Model: {model_name} '
+                 f'Version: {version} - Input: {input_data} - '
+                 f'Output: {output}\n')
+    with open(USAGE_LOG_FILE_NAME, 'a') as log_file:
+        log_file.write(log_entry)
 
 
 @app.route('/list_models', methods=['GET'])

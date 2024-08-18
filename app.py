@@ -4,6 +4,7 @@ import json
 import logging
 import functools
 import re
+import shutil
 import tempfile
 import time
 
@@ -96,21 +97,36 @@ def authenticate():
     return jsonify({"message": "Authentication required"}), 401
 
 
+def sanitize_data(data):
+    # Example sanitization: Convert all strings to str type and strip whitespace
+    sanitized_data = {}
+    for key, value in data.items():
+        if isinstance(value, str):
+            sanitized_data[key] = value.strip()
+        else:
+            sanitized_data[key] = value
+    return sanitized_data
+
+
 # Sanitize filename by removing any potentially dangerous characters
 def sanitize_filename(filename):
     return re.sub(r'[^\w\s.-]', '', filename).strip()
+
 
 # Clean up input data by trimming whitespace from string values
 def sanitize_input(data):
     return {key: value.strip() if isinstance(value, str) else value for key, value in data.items()}
 
+
 @app.errorhandler(400)
 def bad_request(error):
     return jsonify({"error": "Bad Request", "message": str(error)}), 400
 
+
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({"error": "Not Found", "message": str(error)}), 404
+
 
 @app.errorhandler(500)
 def internal_error(error):
@@ -153,36 +169,25 @@ def check_logging():
     return f"DETAILED_LOGGING is set to: {DETAILED_LOGGING}\n"
 
 
+from io import BytesIO
+
 def validate_model(model_file):
-    """
-    Validate the model file by attempting to load it with joblib.
-
-    Args:
-        model_file (werkzeug.datastructures.FileStorage): The uploaded model file object.
-
-    Returns:
-        bool: True if the model is valid, False otherwise.
-    """
     try:
-        # Create a temporary file to save the uploaded model
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            model_file.save(temp_file.name)
-            temp_file_path = temp_file.name
+        # Create an in-memory copy of the file for validation
+        model_file_stream = BytesIO(model_file.read())
+        model_file.seek(0)  # Reset the original file stream position
 
-        # Attempt to load the model
-        with open(temp_file_path, 'rb') as f:
-            joblib.load(f)
-
-        # Remove the temporary file after validation
-        os.remove(temp_file_path)
+        # Validate the model from the in-memory stream
+        joblib.load(model_file_stream)
         return True
     except Exception as e:
         app.logger.error(f"Model validation failed: {str(e)}")
         return False
 
 
-def create_model_metadata(model_filename, version, description=None,
-                          accuracy=None, current_user=None):
+def create_model_metadata(model_name, version, file_extension,
+                          description=None, accuracy=None,
+                          current_user=None):
     """
     Creates and saves metadata for the uploaded model.
 
@@ -196,12 +201,10 @@ def create_model_metadata(model_filename, version, description=None,
     Returns:
         str: Path to the metadata file.
     """
-    # Extract model name and version
-    model_name, _ = os.path.splitext(secure_filename(model_filename))
-    
     # Generate metadata
     metadata = {
-        'model_name': model_filename,
+        'model_name': model_name,
+        'file_extension': file_extension,
         'version': version,
         'description': description or 'No description provided',
         'accuracy': accuracy if accuracy is not None else 'Accuracy not provided',
@@ -253,106 +256,128 @@ def upload_model():
     """
     current_user = get_jwt_identity()
 
+    # Check if request is JSON or form
     data = request.json if request.is_json else request.form
-    data = sanitize_input(data)  # Clean up data
 
+    # Sanitize and validate input
+    data = sanitize_data(data)
+    model_name = data.get('model_name')
     version = data.get('version')
-    if not version or not isinstance(version, str):
-        return bad_request("Valid model version is required")
-
+    accuracy = data.get('accuracy', 'N/A')
+    description = data.get('description', 'No description')
     model_file = request.files.get('model_file')
+
+    if not model_name:
+        return bad_request('Model name is required')
+
+    if not version:
+        return bad_request('version is required')
+
     if not model_file:
         return bad_request("Model file is required")
 
-
-    # Sanitize model filename
-    filename = sanitize_filename(model_file.filename)
-    if not filename:
-        return bad_request("Invalid model file name")
-
-    # Validate the model
+    # Validate the model before saving
     if not validate_model(model_file):
-        return jsonify({"error": "Invalid model file"}), 400
+        return bad_request('Invalid model file')
 
-    description = data.get('description')
-    accuracy = data.get('accuracy')
+    # Secure the file name and save it
+    file_extension = model_file.filename.rsplit('.', 1)[-1].lower()
+    filename = f"{model_name}_{version}.{file_extension}"
+    file_path = os.path.join(MODEL_DIR, filename)
+    model_file.save(file_path)
 
-    # Validate accuracy if provided
-    if accuracy:
-        try:
-            accuracy = float(accuracy)
-        except ValueError:
-            return jsonify({"error": "Invalid accuracy value"}), 400
-
-    # Define the directory path
-    model_dir = os.path.join(MODEL_DIR, version)
-
-    # Create the directory if it doesn't exist
-    os.makedirs(model_dir, exist_ok=True)
-
-    # Save the model file securely
-    file_path = os.path.join(model_dir, secure_filename(filename))
-    try:
-        model_file.save(file_path)
-    except Exception as e:
-        return internal_error(f"Error saving model file: {str(e)}")
-
-    # Create model metadata
+    # Create metadata
     metadata_path = create_model_metadata(
-            filename, version, description, accuracy, current_user)
+            model_name, version, file_extension, description,
+            accuracy, current_user)
 
-    return jsonify({'message': f'Version {version} of model '
-                    f'{model_file.filename} uploaded successfully',
-                    'metadata_path': metadata_path}), 201
+    return jsonify({
+        'model_name': model_name,
+        'version': version,
+        'metadata_path': metadata_path
+    }), 201
 
 
-@app.route('/retrieve_model', methods=['GET'])
-@jwt_required()
-#@requires_data
-def retrieve_model():
+def get_file_extension_from_metadata(model_name, version):
     """
-    Retrieve a machine learning model file.
+    Obtain the file extension from the metadata file for a given model and version.
+
+    Args:
+        model_name (str): The name of the model.
+        version (str): The version of the model.
+
+    Returns:
+        str: The file extension of the model file.
+        None: If metadata or file extension is not found.
+    """
+    # Construct the metadata file path
+    metadata_filename = f"{model_name}_{version}_metadata.json"
+    metadata_path = os.path.join(MODEL_DIR, metadata_filename)
+    
+    # Check if the metadata file exists
+    if not os.path.isfile(metadata_path):
+        return None, None
+    
+    # Read metadata to get file extension
+    with open(metadata_path, 'r') as f:
+        metadata = json.load(f)
+    
+    return metadata_path, metadata.get('file_extension', None)
+
+
+@app.route('/download_model/<string:model_name>/<string:version>', methods=['GET'])
+@jwt_required()
+def download_model(model_name, version):
+    """
+    Retrieve and download a specific model.
+
+    This endpoint allows users to download a model by specifying its name and version.
+
     ---
-    security:
-      - JWT: []
+    tags:
+      - Models
     parameters:
-      - name: model_filename
-        in: query
-        type: string
+      - name: model_name
+        in: path
         required: true
-        description: The name of the model to retrieve.
-      - name: version
-        in: query
-        type: string
-        required: true
-        description: The version of the model to retrieve.
-    responses:
-      200:
-        description: The requested model file
         schema:
-          type: file
-      400:
-        description: Invalid input or missing model_filename/version
-      404:
+          type: string
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: string
+    security:
+      - jwtAuth: []
+    responses:
+      '200':
+        description: Model file successfully retrieved
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      '404':
         description: Model not found
-      500:
-        description: Internal server error while retrieving the model
     """
     current_user = get_jwt_identity()
 
-    data = request.json if request.is_json else request.form
+    if not model_name or not version:
+        return bad_request("Model name and version are required")
 
-    #model_filename = request.args.get('model_filename')
-    #version = request.args.get('version')
+    # Obtain file extension from metadata
+    metadata_path, file_extension = get_file_extension_from_metadata(model_name, version)
 
-    model_filename = data.get('model_filename')
-    version = data.get('version')
+    if metadata_path is None:
+        return not_found(f'Metadata for model {model_name} version '
+                         f'{version} not found')
+    if file_extension is None:
+        return not_found('File extension not found in metadata')
 
-    if not version or not model_filename:
-        return bad_request('Model version and filename are required')
+    model_filename = f"{model_name}_{version}.{file_extension}"
 
     # Construct the path to the model file
-    model_path = os.path.join(MODEL_DIR, version, model_filename)
+    model_path = os.path.join(MODEL_DIR, model_filename)
 
     # Check if the model file exists
     if os.path.exists(model_path):
@@ -361,10 +386,38 @@ def retrieve_model():
         return not_found(f'Model {model_filename} version {version} not found')
 
 
-@app.route('/remove_model', methods=['DELETE'])
+@app.route('/remove_model/<string:model_name>/<string:version>', methods=['DELETE'])
+def remove_model(model_name, version):
+    # Check if model_name and version are provided
+    if not model_name or not version:
+        return bad_request("Model name and version are required")
+
+    metadata_path, file_extension = get_file_extension_from_metadata(model_name, version)
+    model_filename = f'{model_name}_{version}.{file_extension}'
+    model_file_path = os.path.join(MODEL_DIR, model_filename)
+
+    if metadata_path is None:
+        return not_found(f'Metadata for model {model_name} version '
+                         f'{version} not found')
+    if file_extension is None:
+        return not_found('File extension not found in metadata')
+
+    # Remove the model file
+    if os.path.exists(model_file_path):
+        os.remove(model_file_path)
+    else:
+        return not_found(f'Model file {model_filename} not found')
+
+    # Remove the metadata file
+    if os.path.exists(metadata_path):
+        os.remove(metadata_path)
+
+    return jsonify({'message': f'Removed model {model_filename} and metadata'}), 200
+
+
+@app.route('/remove_model/<string:model_name>/<string:version>', methods=['DELETE'])
 @jwt_required()
-@requires_data
-def remove_model():
+def remove_model1(model_name, version):
     """
     Remove a machine learning model.
     ---
@@ -393,37 +446,38 @@ def remove_model():
     """
     current_user = get_jwt_identity()
 
-    data = request.json if request.is_json else request.form
-    model_filename = data.get('model_filename')
+    if not model_name or not version:
+        return bad_request("Model name and version are required")
 
-    if not model_filename:
-        return bad_request('Model filename to remove is required')
-    version = data.get('version')
-    if not version:
-        return bad_request('Model version is required')
+    metadata_path = os.path.join(MODEL_DIR, f'{model_name}_{version}_metadata.json')
+    
+    # Check if the metadata file exists
+    if not os.path.exists(metadata_path):
+        return not_found(f'Metadata for model {model_name} version {version} not found')
 
-    model_dir = f'{MODEL_DIR}/{version}'
-    model_file = f'{MODEL_DIR}/{version}/{model_filename}'
+    try:
+        # Load metadata to get the file extension
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+            file_extension = metadata.get('file_extension', 'pkl')  # Default to 'pkl' if not found
+        
+        model_filename = f'{model_name}_{version}.{file_extension}'
+        model_file_path = os.path.join(MODEL_DIR, model_filename)
+        
+        if os.path.exists(model_file_path):
+            os.remove(model_file_path)
+            return jsonify({'message': f'Removed model {model_filename}'}), 200
+        else:
+            return not_found(f'Model {model_filename} not found')
 
-    if os.path.exists(model_file):
-        try:
-            os.remove(model_file)
-            dir_contents = os.listdir(model_dir)
-            if not dir_contents:
-                os.rmdir(model_dir)
-        except Exception as e:
-            return internal_error(str(e))
-    else:
-        return not_found(f'Model {model_filename} not found '
-                         f'for version {version}')
-    return jsonify({'message': f'Removed model name '
-                   f'{model_filename} for version {version}'}), 200
+    except Exception as e:
+        return internal_error(f'Error processing request: {str(e)}')
 
 
-@app.route('/predict', methods=['POST'])
+@app.route('/predict/<string:model_name>/<string:version>', methods=['POST'])
 @jwt_required()
-@requires_data
-def predict():
+#@requires_data
+def predict(model_name, version):
     """
     Predict using a machine learning model.
     ---
@@ -464,26 +518,28 @@ def predict():
         description: Internal server error during prediction
     """
     current_user = get_jwt_identity()
-
     data = request.json if request.is_json else request.form
 
-    version = data.get('version')
-    if not version:
-        return bad_request('Model version required.')
+    if not model_name or not version:
+        return bad_request("Model name and version are required")
 
-    model_filename = data.get('model_filename')
-    if not model_filename:
-        return bad_request('Model filename is required')
+    metadata_path, file_extension = get_file_extension_from_metadata(model_name, version)
 
+    if metadata_path is None:
+        return not_found(f'Metadata for model {model_name} version '
+                         f'{version} not found')
+    if file_extension is None:
+        return not_found('File extension not found in metadata')
 
-    model_path = os.path.join(MODEL_DIR, version, model_filename)
+    model_filename = f'{model_name}_{version}.{file_extension}'
+    model_file_path = os.path.join(MODEL_DIR, model_filename)
 
-    if not os.path.exists(model_path):
+    if not os.path.exists(model_file_path):
         return not_found(f'Model ' + model_filename + ' not found '
                          f'for version {version}')
 
     # Load the model
-    with open(model_path, 'rb') as f:
+    with open(model_file_path, 'rb') as f:
         model = joblib.load(f)
     
     # Adjust based on your model input format
@@ -521,7 +577,6 @@ def list_models():
         description: Unauthorized, authentication required
       500:
         description: Internal server error while retrieving the model list
-    """
     current_user = get_jwt_identity()
 
     models = {}
@@ -531,6 +586,28 @@ def list_models():
             version_path = os.path.join(MODEL_DIR, version)
             if os.path.isdir(version_path):
                 models[version] = [f for f in os.listdir(version_path)]
+    return jsonify(models), 200
+    """
+    models = {}
+
+    if os.path.exists(MODEL_DIR):
+        for filename in os.listdir(MODEL_DIR):
+            file_path = os.path.join(MODEL_DIR, filename)
+            if os.path.isfile(file_path):
+                # Extract model name and version from filename
+                base_name, ext = os.path.splitext(filename)
+                if ext.startswith('.'):
+                    ext = ext[1:]  # Remove leading dot
+                parts = base_name.rsplit('_', 1)
+                if len(parts) == 2:
+                    model_name, version = parts
+                    if version not in models:
+                        models[version] = []
+                    models[version].append({
+                        'model_name': model_name,
+                        'file_extension': ext
+                    })
+
     return jsonify(models), 200
 
 
@@ -577,7 +654,7 @@ def log_request_info(response):
             model_filename = model_file.filename if model_file else "No file uploaded"
 
             log_message += f"Form Data: {form_str}, "
-            log_message += f"Model Filename: {model_filename}"
+            log_message += f"Model Filename: {model_filename}, "
 
         # Additional logging for the predict endpoint
         if request.endpoint == 'predict' and json_data:
@@ -588,7 +665,6 @@ def log_request_info(response):
                 f"Prediction Time: {duration:.2f} seconds, "
             )
 
-        print (f'DETAILED_LOGGING {DETAILED_LOGGING}')
         if DETAILED_LOGGING:
             # Log user identity and IP address
             user_info = request.remote_addr

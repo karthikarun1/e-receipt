@@ -94,6 +94,21 @@ done
 
 echo "All files exist and match the expected size."
 
+# Upload the same model name and version again and make
+# sure it gives an error output that the model already exists
+command="./upload.sh \
+	--model_name sample \
+	--model_file sample_model.pkl \
+	--version v1"
+expected_output=$(cat <<EOF
+{
+  "error": "Bad Request",
+  "message": "Model version v1 for sample model already exists"
+}
+EOF
+)
+perform_test "$command" "$expected_output"
+
 command="./download.sh --model_name sample --version v1"
 echo $command
 rm -f /tmp/tmp.pkl
@@ -116,7 +131,6 @@ expected_output=$(cat <<EOF
 EOF
 )
 perform_test "$command" "$expected_output"
-
 
 command="./predict.sh --model_name sample --version v1 --expected_output 1"
 expected_output=$(cat <<EOF

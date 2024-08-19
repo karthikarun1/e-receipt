@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from flask import Flask, request, jsonify, send_file
 from flasgger import Swagger
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from prometheus_client import CollectorRegistry, Gauge, generate_latest, Summary
 from werkzeug.utils import secure_filename
 
 
@@ -24,6 +25,10 @@ jwt = JWTManager(app)
 # Sample user data (in real applications, use a database)
 jwt_users = {"admin": "pass1"}
 
+# Create a prometheus metric
+registry = CollectorRegistry()
+g = Gauge('example_metric', 'Example metric for demonstration', registry=registry)
+REQUEST_DURATION = Summary('http_request_duration_seconds', 'Duration of HTTP requests in seconds')
 
 # For API documentation.
 swagger = Swagger(app, template={
@@ -46,6 +51,19 @@ DETAILED_LOGGING = os.getenv('DETAILED_LOGGING', 'false').lower() == 'true'
 MODEL_DIR = "models"
 
 USAGE_LOG_FILE_NAME='usage_logs.txt'
+
+# Create a metric to track prediction times
+PREDICTION_TIME = Summary('prediction_duration_seconds', 'Time spent processing prediction requests')
+
+
+@app.route('/metrics')
+def metrics():
+    # Update metric values if needed
+    #g.set(42)  # Example value
+    #return Response(generate_latest(registry), mimetype='text/plain; version=0.0.4; charset=utf-8')
+    # Expose the metrics to Prometheus
+    return generate_latest()
+
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -286,6 +304,11 @@ def upload_model():
     file_extension = model_file.filename.rsplit('.', 1)[-1].lower()
     filename = f"{model_name}_{version}.{file_extension}"
     file_path = os.path.join(MODEL_DIR, filename)
+
+    if os.path.exists(file_path):
+        return bad_request(f'Model version {version} for {model_name} '
+                           f'model already exists')
+
     model_file.save(file_path)
 
     # Create metadata
@@ -445,9 +468,17 @@ def evaluate_prediction(model, input_data, expected_output=None):
     return result
 
 
+@PREDICTION_TIME.time()
+def predict_with_metrics(model_file_path, features, expected_output):
+    # Load the model
+    with open(model_file_path, 'rb') as f:
+        model = joblib.load(f)
+    result = evaluate_prediction(model, features, expected_output)
+    return result
+
+
 @app.route('/predict/<string:model_name>/<string:version>', methods=['POST'])
 @jwt_required()
-#@requires_data
 def predict(model_name, version):
     """
     Predict using a machine learning model.
@@ -488,6 +519,7 @@ def predict(model_name, version):
       500:
         description: Internal server error during prediction
     """
+    start_time = time.time()
     current_user = get_jwt_identity()
     data = request.json if request.is_json else request.form
 
@@ -509,9 +541,6 @@ def predict(model_name, version):
         return not_found(f'Model ' + model_filename + ' not found '
                          f'for version {version}')
 
-    # Load the model
-    with open(model_file_path, 'rb') as f:
-        model = joblib.load(f)
     
     # Adjust based on your model input format
     features = data.get('features') or data.get('data')
@@ -519,13 +548,23 @@ def predict(model_name, version):
     if not features:
         return bad_request('No features or data provided')
 
+    # Load the model
+    #with open(model_file_path, 'rb') as f:
+    #    model = joblib.load(f)
+
     expected_output = data.get('expected_output', None)
-    result = evaluate_prediction(model, features, expected_output)
+    #result = evaluate_prediction(model, features, expected_output)
+
+    result = predict_with_metrics(model_file_path, features, expected_output)
 
     # Log usage
     if os.getenv('LOG_MODEL_USAGE', 'False').lower() == 'true':
         log_model_usage(model_name, version, features,
-                        result['prediction'].tolist(), result.get('accuracy'))
+                        result['prediction'].tolist(),
+                        result.get('accuracy'))
+
+    duration = time.time() - start_time
+    app.logger.info(f"Prediction processed in {duration:.2f} seconds")
   
     if expected_output: 
         return jsonify({'prediction': result['prediction'].tolist(),
@@ -661,6 +700,14 @@ def log_request_info(response):
             log_message += f"User-Agent: {user_agent}"
 
         app.logger.info(log_message)
+    return response
+
+
+@app.after_request
+def record_duration(response):
+    if hasattr(request, 'start_time'):
+        duration = time.time() - request.start_time
+        REQUEST_DURATION.observe(duration)
     return response
 
 

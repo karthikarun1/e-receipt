@@ -1,5 +1,6 @@
 import boto3
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 
 def list_dynamodb_items(table_name, dynamodb_resource):
     """
@@ -111,3 +112,31 @@ if __name__ == "__main__":
     object_key = 'admin_user_id/sample_v0.pkl'
     print(f"\nMetadata for object '{object_key}':")
     print(get_s3_object_metadata(bucket_name, object_key, s3_client))
+
+
+def clear_dynamodb_table(dynamodb, table_name):
+    """Clear all items from a DynamoDB table."""
+    table = dynamodb.Table(table_name)
+    
+    try:
+        # Get the key schema to construct keys for deletion
+        key_schema = table.key_schema
+        key_names = [key['AttributeName'] for key in key_schema]
+        
+        # Scan the table to get all items
+        response = table.scan()
+        items = response.get('Items', [])
+
+        while 'LastEvaluatedKey' in response:
+            response = table.scan(ExclusiveStartKey=response['LastEvaluatedKey'])
+            items.extend(response.get('Items', []))
+
+        # Delete each item
+        for item in items:
+            key = {name: item[name] for name in key_names if name in item}
+            table.delete_item(Key=key)
+
+        print(f"Cleared all items from table: {table_name}")
+
+    except ClientError as e:
+        print(f"Error clearing table {table_name}: {e}")

@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import time
 
+# System defined
 from datetime import datetime
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify, send_file
@@ -15,15 +16,38 @@ from flasgger import Swagger
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from prometheus_client import CollectorRegistry, Gauge, generate_latest, Summary
 from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash, check_password_hash
+
+# User defined
+from storage import MlModelStorage
+from metadata_store import MetadataStore
 
 
 app = Flask(__name__)
 
+# Configuration to control detailed logging
+load_dotenv()
+
 app.config['JWT_SECRET_KEY'] = 'your_jwt_secret_key'
 jwt = JWTManager(app)
 
+USER_FILE = 'users.json'
+
 # Sample user data (in real applications, use a database)
 jwt_users = {"admin": "pass1"}
+
+def load_users():
+    try:
+        with open(USER_FILE, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+def save_users(users):
+    with open(USER_FILE, 'w') as f:
+        json.dump(users, f)
+
+USERS = load_users()
 
 # Create a prometheus metric
 registry = CollectorRegistry()
@@ -43,18 +67,15 @@ swagger = Swagger(app, template={
 logging.basicConfig(level=logging.INFO)
 app.logger.addHandler(logging.StreamHandler())
 
-# Configuration to control detailed logging
-load_dotenv()
 DETAILED_LOGGING = os.getenv('DETAILED_LOGGING', 'false').lower() == 'true'
 
 # Directory to store models
-MODEL_DIR = "models"
+LOCAL_DIR = os.getenv('LOCAL_DIR')
 
 USAGE_LOG_FILE_NAME='usage_logs.txt'
 
 # Create a metric to track prediction times
 PREDICTION_TIME = Summary('prediction_duration_seconds', 'Time spent processing prediction requests')
-
 
 @app.route('/metrics')
 def metrics():
@@ -205,7 +226,7 @@ def validate_model(model_file):
         return False
 
 
-def create_model_metadata(model_name, version, file_extension,
+def create_model_metadata(user_id, model_name, version, file_extension,
                           description=None, accuracy=None,
                           current_user=None):
     """
@@ -234,7 +255,7 @@ def create_model_metadata(model_name, version, file_extension,
 
     # Define metadata file path
     metadata_filename = f"{model_name}_{version}_metadata.json"  # Adjust versioning as needed
-    metadata_path = os.path.join('models', metadata_filename)
+    metadata_path = os.path.join(user_id, LOCAL_DIR, metadata_filename)
     
     # Save metadata to file
     with open(metadata_path, 'w') as f:
@@ -303,23 +324,30 @@ def upload_model():
     # Secure the file name and save it
     file_extension = model_file.filename.rsplit('.', 1)[-1].lower()
     filename = f"{model_name}_{version}.{file_extension}"
-    file_path = os.path.join(MODEL_DIR, filename)
+    file_path = os.path.join(LOCAL_DIR, filename)
 
-    if os.path.exists(file_path):
-        return bad_request(f'Model version {version} for {model_name} '
-                           f'model already exists')
+    user_id = 'admin_user_id' 
+    group_id = None
+    success, error = MlModelStorage().save(
+        filename,
+        model_file,
+        version,
+        model_name,
+        file_extension,
+        current_user, 
+        user_id,
+        group_id,
+        description,
+        accuracy,
+    )
 
-    model_file.save(file_path)
-
-    # Create metadata
-    metadata_path = create_model_metadata(
-            model_name, version, file_extension, description,
-            accuracy, current_user)
+    if error:
+        return bad_request(f'Error: {error}. Unable to save model version '
+                           f'{version} for {model_name}')
 
     return jsonify({
         'model_name': model_name,
         'version': version,
-        'metadata_path': metadata_path
     }), 201
 
 
@@ -337,7 +365,7 @@ def get_file_extension_from_metadata(model_name, version):
     """
     # Construct the metadata file path
     metadata_filename = f"{model_name}_{version}_metadata.json"
-    metadata_path = os.path.join(MODEL_DIR, metadata_filename)
+    metadata_path = os.path.join(LOCAL_DIR, metadata_filename)
     
     # Check if the metadata file exists
     if not os.path.isfile(metadata_path):
@@ -402,7 +430,7 @@ def download_model(model_name, version):
     model_filename = f"{model_name}_{version}.{file_extension}"
 
     # Construct the path to the model file
-    model_path = os.path.join(MODEL_DIR, model_filename)
+    model_path = os.path.join(LOCAL_DIR, model_filename)
 
     # Check if the model file exists
     if os.path.exists(model_path):
@@ -419,7 +447,7 @@ def remove_model(model_name, version):
 
     metadata_path, file_extension = get_file_extension_from_metadata(model_name, version)
     model_filename = f'{model_name}_{version}.{file_extension}'
-    model_file_path = os.path.join(MODEL_DIR, model_filename)
+    model_file_path = os.path.join(LOCAL_DIR, model_filename)
 
     if metadata_path is None:
         return not_found(f'Metadata for model {model_name} version '
@@ -535,7 +563,7 @@ def predict(model_name, version):
         return not_found('File extension not found in metadata')
 
     model_filename = f'{model_name}_{version}.{file_extension}'
-    model_file_path = os.path.join(MODEL_DIR, model_filename)
+    model_file_path = os.path.join(LOCAL_DIR, model_filename)
 
     if not os.path.exists(model_file_path):
         return not_found(f'Model ' + model_filename + ' not found '
@@ -608,18 +636,18 @@ def list_models():
 
     models = {}
 
-    if os.path.exists(MODEL_DIR):
-        for version in os.listdir(MODEL_DIR):
-            version_path = os.path.join(MODEL_DIR, version)
+    if os.path.exists(LOCAL_DIR):
+        for version in os.listdir(LOCAL_DIR):
+            version_path = os.path.join(LOCAL_DIR, version)
             if os.path.isdir(version_path):
                 models[version] = [f for f in os.listdir(version_path)]
     return jsonify(models), 200
     """
     models = {}
 
-    if os.path.exists(MODEL_DIR):
-        for filename in os.listdir(MODEL_DIR):
-            file_path = os.path.join(MODEL_DIR, filename)
+    if os.path.exists(LOCAL_DIR):
+        for filename in os.listdir(LOCAL_DIR):
+            file_path = os.path.join(LOCAL_DIR, filename)
             if os.path.isfile(file_path):
                 # Extract model name and version from filename
                 base_name, ext = os.path.splitext(filename)

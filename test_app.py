@@ -1,32 +1,35 @@
-import pytest
-import requests
+import unittest
+from app import app
 
-BASE_URL = 'http://127.0.0.1:5000'
+class PredictEndpointTestCase(unittest.TestCase):
+    def setUp(self):
+        self.app = app.test_client()
+        self.app.testing = True
 
-def test_upload_model():
-    with open('sample_model.pkl', 'rb') as f:
-        response = requests.post(f'{BASE_URL}/upload_model', files={'model': f})
-        assert response.status_code == 200
-        assert response.json().get('message') == 'Model saved as models/sample_model.pkl'
+    def test_predict_success(self):
+        response = self.app.post('/predict',
+                                 json={
+                                     "version": "v2",
+                                     "model_filename": "sample_model.pkl",
+                                     "data": [5.9, 3.0, 4.2, 1.5],
+                                       },
+                                 auth=('admin', 'secret'))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('prediction', response.json)
 
-def test_list_models():
-    response = requests.get(f'{BASE_URL}/list_models')
-    assert response.status_code == 200
-    assert 'sample_model.pkl' in response.json().get('models')
+    def test_predict_authentication_failure(self):
+        response = self.app.post('/predict',
+                                 json={"data": [5.9, 3.0, 4.2, 1.5]},
+                                 auth=('wrong_user', 'wrong_password'))
+        self.assertEqual(response.status_code, 401)
+        self.assertIn('Authentication required', response.json['message'])
 
-def test_predict():
-    data = [5.1, 3.5, 1.4, 0.2]
-    response = requests.post(f'{BASE_URL}/predict', json={'model_filename': 'sample_model.pkl', 'data': data})
-    assert response.status_code == 200
-    assert 'prediction' in response.json()
+    def test_predict_invalid_data(self):
+        response = self.app.post('/predict',
+                                 json={"data": "invalid_data"},
+                                 auth=('admin', 'secret'))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('error', response.json)
 
-def test_remove_model():
-    response = requests.post(f'{BASE_URL}/remove_model', json={'model_filename': 'sample_model.pkl'})
-    assert response.status_code == 200
-    assert response.json().get('message') == 'Model sample_model.pkl removed successfully'
-
-def test_edge_case():
-    # Test with an invalid model filename
-    response = requests.post(f'{BASE_URL}/predict', json={'model_filename': 'non_existent_model.pkl', 'data': [5.1, 3.5, 1.4, 0.2]})
-    assert response.status_code == 404
-    assert 'error' in response.json()
+if __name__ == '__main__':
+    unittest.main()

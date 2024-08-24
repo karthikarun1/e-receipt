@@ -1,4 +1,4 @@
-rm -f models/*
+rm -rf models/*
 
 perform_test() {
   local command="$1"
@@ -30,7 +30,6 @@ command="./upload.sh \
 	--version v1"
 expected_output=$(cat <<EOF
 {
-  "metadata_path": "models/sample_v1_metadata.json",
   "model_name": "sample",
   "version": "v1"
 }
@@ -177,7 +176,6 @@ command="./upload.sh \
 	--accuracy 0.7"
 expected_output=$(cat <<EOF
 {
-  "metadata_path": "models/sample_v2_metadata.json",
   "model_name": "sample",
   "version": "v2"
 }
@@ -312,7 +310,6 @@ echo "test: uploading good data"
 command='./upload.sh --model_name forest --model_file random_forest_model.pkl --description "Random forest model v0" --version v0'
 expected_output=$(cat <<EOF
 {
-  "metadata_path": "models/forest_v0_metadata.json",
   "model_name": "forest",
   "version": "v0"
 }

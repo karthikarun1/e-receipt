@@ -1,6 +1,20 @@
 import boto3
+import jwt
+import logging
+import os
+import time
+import traceback
+
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
+from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
+
+# Load environment variables from .env file
+load_dotenv()
+
+table_prefix = os.getenv('TABLE_PREFIX')
 
 def list_dynamodb_items(table_name, dynamodb_resource):
     """
@@ -140,3 +154,68 @@ def clear_dynamodb_table(dynamodb, table_name):
 
     except ClientError as e:
         print(f"Error clearing table {table_name}: {e}")
+
+
+def handle_exception(e, message=None):
+    """Utility function to handle exceptions with optional traceback."""
+    if message:
+        print(f"{message}: {e}")
+    else:
+        print(f"Error: {e}")
+
+    # Check environment variable to determine if traceback should be printed
+    if os.getenv('PRINT_TRACEBACK', 'false').lower() == 'true':
+        traceback.print_exc()
+
+    # Log the stack trace based on environment settings
+    if os.getenv('LOG_STACKTRACE', 'false').lower() == 'true':
+        logger.error(traceback.format_exc())
+
+
+def cleanup_revokedtokens():
+    """Cleansup expired tokens that are stored in RevokedTokens table 
+       (after the client is logged out) for immediate login denial if 
+       the token is used again for login attempts after client logout.
+       This would have to be run periodically (using a cronjob or some
+       other mechanism). Also this table would be used to store other
+       tokens other than login purposes too.
+    """
+    revokedtokens_table = dynamodb.Table(f'{table_prefix}_RevokedTokens')
+    current_time = int(time.time())
+    scan = revokedtokens_table.scan()
+    for item in scan['Items']:
+        if item['expires_at'] < current_time:
+            denylist_table.delete_item(Key={'token': item['token']})
+    print("RevokedTokens cleanup complete.")
+
+
+# superuser
+def get_remaining_time_for_token(token, secret_key):
+    print (f'------utils grtt: token {token}')
+    print (f'------utils grtt: secret_key {secret_key}')
+    try:
+        # Decode the JWT token to extract its payload
+        payload = jwt.decode(token, secret_key, algorithms=["HS256"])
+
+        # Get the current time and the expiration time
+        current_time = int(time.time())
+        expiration_time = payload.get('exp')
+
+        # Calculate the remaining time in seconds
+        remaining_time = expiration_time - current_time
+
+        if remaining_time > 0:
+            remaining_minutes = remaining_time // 60
+            remaining_hours = remaining_minutes // 60
+            return {
+                "remaining_seconds": remaining_time,
+                "remaining_minutes": remaining_minutes,
+                "remaining_hours": remaining_hours
+            }
+        else:
+            return {"error": "Token has already expired"}
+
+    except jwt.ExpiredSignatureError:
+        return {"error": "Token has already expired"}
+    except jwt.InvalidTokenError:
+        return {"error": "Invalid token"}

@@ -1,22 +1,28 @@
 import os
 import joblib
 import json
+import jwt
 import logging
 import functools
 import re
 import shutil
+import traceback
 import tempfile
 import time
+import utils
+
+import dynamodb_utils
 
 # System defined
 from datetime import datetime
 from dotenv import load_dotenv
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, redirect, request, jsonify, render_template_string, send_file, session, url_for
 from flasgger import Swagger
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from prometheus_client import CollectorRegistry, Gauge, generate_latest, Summary
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
+
+from user_management import UserManager  # Import UserManager from your user management module
 
 # User defined
 from storage import MlModelStorage
@@ -25,29 +31,18 @@ from metadata_store import MetadataStore
 
 app = Flask(__name__)
 
+
 # Configuration to control detailed logging
 load_dotenv()
 
-app.config['JWT_SECRET_KEY'] = 'your_jwt_secret_key'
-jwt = JWTManager(app)
+JWT_SECRET = os.getenv('JWT_SECRET')
+app.secret_key = JWT_SECRET  # needed for sessions to work
 
-USER_FILE = 'users.json'
-
-# Sample user data (in real applications, use a database)
-jwt_users = {"admin": "pass1"}
-
-def load_users():
-    try:
-        with open(USER_FILE, 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-
-def save_users(users):
-    with open(USER_FILE, 'w') as f:
-        json.dump(users, f)
-
-USERS = load_users()
+# Initialize the UserManager globally
+table_prefix = os.getenv('TABLE_PREFIX')
+dynamodb_resource = dynamodb_utils.get_dynamodb_resource()
+dynamodb_client = dynamodb_utils.get_dynamodb_client()
+user_manager = UserManager(dynamodb_resource, table_prefix)
 
 # Create a prometheus metric
 registry = CollectorRegistry()
@@ -69,9 +64,6 @@ app.logger.addHandler(logging.StreamHandler())
 
 DETAILED_LOGGING = os.getenv('DETAILED_LOGGING', 'false').lower() == 'true'
 
-# Directory to store models
-LOCAL_DIR = os.getenv('LOCAL_DIR')
-
 USAGE_LOG_FILE_NAME='usage_logs.txt'
 
 # Create a metric to track prediction times
@@ -86,47 +78,312 @@ def metrics():
     return generate_latest()
 
 
-@app.route('/login', methods=['POST'])
+# Middleware to protect routes
+def token_required(f):
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        revokedtokens_table = dynamodb_resource.Table(f'{table_prefix}_RevokedTokens')
+        token = None
+        
+        if 'Authorization' in request.headers:
+            auth_header = request.headers['Authorization']
+            token = auth_header.split(" ")[1]  # Extract the token part from the header
+
+        if not token:
+            # Store the original URL the user was trying to access
+            session['next'] = request.url
+            return redirect(url_for('login'))  # Redirect to login page
+
+        # Check if the token is in the revokedtokens_table
+        response = revokedtokens_table.get_item(Key={'token': token})
+        if 'Item' in response:
+            return jsonify({'message': 'Token has been revoked!'}), 401
+
+        try:
+            # Decode the token using the secret
+            data = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
+            user_id = data['user_id']
+
+            # Check if the user exists in the database
+            user = user_manager.get_user_details_by_id(user_id)
+            if not user:
+                return jsonify({'message': 'User not found!'}), 401
+
+        except jwt.ExpiredSignatureError:
+            return jsonify({'message': 'Token has expired!'}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({'message': 'Token is invalid!'}), 401
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
+            traceback.print_exc()
+            return jsonify({'message': 'An error occurred during authentication.'}), 500
+
+        return f(user, *args, **kwargs)
+
+    return decorated
+
+
+# Example protected route
+@app.route('/protected_resource', methods=['GET'])
+@token_required
+def protected_resource(user):
+    # This resource is protected and only accessible with a valid token and registered user
+    return jsonify({'message': f'Welcome, {user["username"]}! This is a protected resource.'})
+
+
+@app.route('/forgot_password', methods=['POST'])
+def forgot_password():
+    data = request.json
+    email = data.get('email')
+
+    if not email:
+        return bad_request('Email is required.')
+
+    try:
+        user_manager.request_password_reset(email)
+        return jsonify({'message': 'Password reset link sent to your email.'}), 200
+    except Exception as e:
+        return bad_request(f'Failed to initiate password reset: {str(e)}')
+
+@app.route('/reset_password', methods=['GET', 'POST'])
+def reset_password():
+    if request.method == 'GET':
+        return handle_reset_password_get_verify_token()
+    elif request.method == 'POST':
+        return handle_reset_password_post()
+
+def handle_reset_password_get_verify_token():
+    token = request.args.get('token')
+    if not token:
+        return bad_request('Reset token is required.')
+
+
+    # Validate the token immediately
+    try:
+        response = user_manager.reset_tokens_table.get_item(Key={'token': token})
+        token_data = response.get('Item')
+
+        if not token_data:
+            return bad_request('Invalid reset token.')
+        if int(time.time()) > token_data['expires_at']:
+            return bad_request('Reset token has expired.')
+
+        # If token is valid, show the form without displaying the email
+        html_form = '''
+            <!doctype html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <title>Reset Password</title>
+            </head>
+            <body>
+                <h2>Reset Your Password</h2>
+                <form action="/reset_password" method="post">
+                    <input type="hidden" name="token" value="{0}">
+                    <label for="new_password">New Password:</label><br>
+                    <input type="password" id="new_password" name="new_password" required><br><br>
+                    <button type="submit">Reset Password</button>
+                </form>
+            </body>
+            </html>
+        '''.format(token)
+
+        return render_template_string(html_form)
+
+    except Exception as e:
+        print(f"Error during token validation: {e}")
+        return bad_request('Failed to validate reset token.')
+
+
+def handle_reset_password_get_no_token_verification():
+    token = request.args.get('token')
+    if not token:
+        return bad_request('Reset token is required.')
+
+    # Simple HTML form to collect the new password
+    html_form = '''
+        <!doctype html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <title>Reset Password</title>
+        </head>
+        <body>
+            <h2>Reset Your Password</h2>
+            <form action="/reset_password" method="post">
+                <input type="hidden" name="token" value="{0}">
+                <label for="new_password">New Password:</label><br>
+                <input type="password" id="new_password" name="new_password" required><br><br>
+                <button type="submit">Reset Password</button>
+            </form>
+        </body>
+        </html>
+    '''.format(token)
+
+    return render_template_string(html_form)
+
+
+def handle_reset_password_post():
+    token = request.form.get('token')
+    new_password = request.form.get('new_password')
+
+    if not token or not new_password:
+        return bad_request('Reset token and new password are required.')
+
+    try:
+        success = user_manager.reset_password(token, new_password)
+        if success:
+            return jsonify({'message': 'Password has been reset successfully.'}), 200
+        else:
+            return bad_request('Invalid or expired reset token.')
+    except Exception as e:
+        print(f"Error during password reset: {e}")
+        traceback.print_exc()
+        return bad_request(f'Failed to reset password: {str(e)}')
+
+
+@app.route('/register', methods=['POST'])
+def register_user():
+    data = request.json
+
+    try:
+        # Call register_user from UserManager with the data from the request
+        user_manager.register_user(
+            username=data['username'],
+            email=data['email'],
+            password=data['password'],
+            confirm_password=data['confirm_password']
+        )
+        return jsonify({'message': 'User registered successfully'}), 201
+    except Exception as e:
+        return bad_request(f'Failed to register user: {str(e)}')
+
+
+@app.route('/get_user', methods=['GET'])
+def get_user():
+    username = request.args.get('username')
+    email = request.args.get('email')
+
+    if not username and not email:
+        return bad_request('You must provide either a username or an email to look up a user.')
+
+    try:
+        if username:
+            user = user_manager.get_user_details_by_username(username)
+        else:
+            user = user_manager.get_user_details_by_email(email)
+
+        if user:
+            return jsonify(user), 200
+        else:
+            return jsonify({'message': 'User not found'}), 404
+    except Exception as e:
+        return bad_request(f'Failed to retrieve user: {str(e)}')
+
+
+# superuser
+# Flask endpoint to list contents of a specific DynamoDB table
+@app.route('/list_table/<string:table_name>', methods=['GET'])
+def list_table_contents(table_name):
+    try:
+        # Access the DynamoDB table
+        table = dynamodb_resource.Table(table_name)
+
+        # Scan the table to get all items
+        response = table.scan()
+        items = response.get('Items', [])
+
+        return jsonify({'status': 'success', 'data': items}), 200
+
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+# superuser
+# Flask endpoint to check token expiration time
+@app.route('/token_remaining_time', methods=['POST'])
+def token_remaining_time():
+    data = request.json
+    token = data.get("token")
+
+    if not token:
+        return jsonify({"error": "Token is required"}), 400
+
+    remaining_time_info = utils.get_remaining_time_for_token(token, JWT_SECRET)
+    return jsonify(remaining_time_info), 200
+
+
+# superuser
+# Flask endpoint to list all DynamoDB tables
+@app.route('/list_all_tables', methods=['GET'])
+def list_dynamodb_tables():
+    try:
+        # List all tables in DynamoDB
+        response = dynamodb_client.list_tables()
+        table_names = response.get('TableNames', [])
+
+        return jsonify({'status': 'success', 'tables': table_names}), 200
+
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+# superuser 
+@app.route('/list_all_users', methods=['GET'])
+def list_all_users():
+    try:
+        users = user_manager.get_all_users()
+        return jsonify(users), 200
+    except Exception as e:
+        return bad_request(f'Failed to list users: {str(e)}')
+
+
+@app.route('/login', methods=['GET', 'POST'])
 def login():
-    """
-    User login
-    ---
-    parameters:
-      - name: username
-        in: body
-        required: true
-        schema:
-          type: string
-      - name: password
-        in: body
-        required: true
-        schema:
-          type: string
-    responses:
-      200:
-        description: Successful login
-      401:
-        description: Invalid credentials
-    """
-    username = request.json.get('username', None)
-    password = request.json.get('password', None)
+    if request.method == 'GET':
+        # If a GET request is made, show a login page or return a message
+        return jsonify({"message": "Please log in to access this resource."}), 200
+    
+    if request.method == 'POST':
+        data = request.json
+        identifier = data.get('identifier')
+        password = data.get('password')
 
-    # validate from database 
-    #user = User.query.filter_by(username=username).first()
-    #if user and check_password_hash(user.password_hash, password):
-    #    access_token = create_access_token(identity={'username': user.username})
-    #    return jsonify(access_token=access_token), 200
-    #else:
-    #    return jsonify({'msg': 'Invalid credentials'}), 401
+        if not identifier or not password:
+            return bad_request("Username/Email and password are required.")
 
-    # validate from users dict 
-    if jwt_users.get(username) == password:
-        # Create JWT token if credentials are valid
-        access_token = create_access_token(identity={'username': username})
-        return jsonify(access_token=access_token), 200
-    else:
-        # Return 401 Unauthorized if credentials are invalid
-        return jsonify({'msg': 'Invalid credentials'}), 401
+        try:
+            token = user_manager.login_user(identifier, password)
+            if token:
+                session['token'] = token  # Store token in session for redirect
+                next_url = session.pop('next', None)  # Get the next URL from session
+                if next_url:
+                    return redirect(next_url)
+                else:
+                    return jsonify({"token": token}), 200
+            else:
+                return bad_request("Invalid username, password, or email not verified.")
+        except ValueError as ve:
+            return bad_request(f"Failed to authenticate user: {ve}")
+
+
+@app.route('/logout', methods=['POST'])
+@token_required
+def logout(current_user):
+    token = request.headers['Authorization'].split(" ")[1]  # Extract the token from the Authorization header
+    
+    # Decode the token to get the expiration time
+    decoded_token = jwt.decode(token, JWT_SECRET, algorithms=['HS256'], options={"verify_signature": False})
+    expires_at = decoded_token.get('exp')
+
+    # Add the token to the revokedtokens with its expiration time
+    revokedtokens_table = dynamodb_resource.Table(f'{table_prefix}_RevokedTokens')
+    revokedtokens_table.put_item(Item={
+        'token': token,
+        'expires_at': expires_at
+    })
+    
+    return jsonify({"message": "Successfully logged out"}), 200
 
 
 # Basic authentication
@@ -265,36 +522,7 @@ def create_model_metadata(user_id, model_name, version, file_extension,
 
 
 @app.route('/upload_model', methods=['POST'])
-@jwt_required()
-@requires_data
 def upload_model():
-    """
-    Upload a model
-    ---
-    security:
-      - JWT: []
-    parameters:
-      - name: model_name
-        in: formData
-        type: string
-        description: Name of the model
-        required: true
-      - name: version
-        in: formData
-        type: string
-        description: Version of the model
-        required: true
-      - name: model_file
-        in: formData
-        type: file
-        description: The model file to upload
-        required: true
-    responses:
-      200:
-        description: Model uploaded successfully
-      401:
-        description: Unauthorized, token missing or invalid
-    """
     current_user = get_jwt_identity()
 
     # Check if request is JSON or form
@@ -379,40 +607,7 @@ def get_file_extension_from_metadata(model_name, version):
 
 
 @app.route('/download_model/<string:model_name>/<string:version>', methods=['GET'])
-@jwt_required()
 def download_model(model_name, version):
-    """
-    Retrieve and download a specific model.
-
-    This endpoint allows users to download a model by specifying its name and version.
-
-    ---
-    tags:
-      - Models
-    parameters:
-      - name: model_name
-        in: path
-        required: true
-        schema:
-          type: string
-      - name: version
-        in: path
-        required: true
-        schema:
-          type: string
-    security:
-      - jwtAuth: []
-    responses:
-      '200':
-        description: Model file successfully retrieved
-        content:
-          application/octet-stream:
-            schema:
-              type: string
-              format: binary
-      '404':
-        description: Model not found
-    """
     current_user = get_jwt_identity()
 
     if not model_name or not version:
@@ -506,47 +701,7 @@ def predict_with_metrics(model_file_path, features, expected_output):
 
 
 @app.route('/predict/<string:model_name>/<string:version>', methods=['POST'])
-@jwt_required()
 def predict(model_name, version):
-    """
-    Predict using a machine learning model.
-    ---
-    security:
-      - JWT: []
-    parameters:
-      - name: data
-        in: body
-        required: true
-        schema:
-          type: object
-          properties:
-            data:
-              type: array
-              items:
-                type: number
-              description: The input data for prediction.
-            model_filename:
-              type: string
-              description: The filename of the model to use for prediction.
-          required:
-            - data
-            - model_filename
-    responses:
-      200:
-        description: Prediction result
-        schema:
-          type: object
-          properties:
-            prediction:
-              type: number
-              description: The result of the prediction.
-      400:
-        description: Invalid input or missing model_filename/data
-      404:
-        description: Model not found
-      500:
-        description: Internal server error during prediction
-    """
     start_time = time.time()
     current_user = get_jwt_identity()
     data = request.json if request.is_json else request.form
@@ -610,39 +765,7 @@ def log_model_usage(model_name, version, input_data, output, prediction_accuracy
 
 
 @app.route('/list_models', methods=['GET'])
-@jwt_required()
 def list_models():
-    """
-    List all available machine learning models.
-    ---
-    security:
-      - JWT: []
-    responses:
-      200:
-        description: A list of available models
-        schema:
-          type: object
-          properties:
-            models:
-              type: array
-              items:
-                type: string
-              description: List of model filenames.
-      401:
-        description: Unauthorized, authentication required
-      500:
-        description: Internal server error while retrieving the model list
-    current_user = get_jwt_identity()
-
-    models = {}
-
-    if os.path.exists(LOCAL_DIR):
-        for version in os.listdir(LOCAL_DIR):
-            version_path = os.path.join(LOCAL_DIR, version)
-            if os.path.isdir(version_path):
-                models[version] = [f for f in os.listdir(version_path)]
-    return jsonify(models), 200
-    """
     models = {}
 
     if os.path.exists(LOCAL_DIR):
@@ -664,6 +787,20 @@ def list_models():
                     })
 
     return jsonify(models), 200
+
+@app.route('/verify_email', methods=['GET'])
+def verify_email():
+    code = request.args.get('code')
+    if not code:
+        return bad_request('Missing verification code')
+    
+    # Call the UserManager's verify_email method
+    result = user_manager.verify_email(code)
+
+    if result:
+        return jsonify({'message': 'Email verified successfully'}), 200
+    else:
+        return bad_request('Verification failed or code expired')
 
 
 # Metrics and log collection

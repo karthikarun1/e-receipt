@@ -12,16 +12,33 @@ class Permission(Enum):
     REMOVE_MODEL = 'remove_model'
     PREDICT = 'predict'
     DOWNLOAD_MODEL = 'download_model'
+    ADD_USER_TO_ORGANIZATION = 'add_user_to_organization'
+    REMOVE_USER_FROM_ORGANIZATION = 'remove_user_from_organization'
+    ADD_GROUP_TO_ORGANIZATION = 'add_group_to_organization'
+    REMOVE_GROUP_FROM_ORGANIZATION = 'remove_group_from_organization'
+    SET_ORGANIZATION_ADMIN = 'set_organization_admin'
+    REMOVE_ORGANIZATION_ADMIN = 'remove_organization_admin'
+
 
 class PermissionsManager:
-    def __init__(self, dynamodb):
-        self.permissions_table = dynamodb.Table('Permissions')
-        self.groups_table = dynamodb.Table('Groups')
-        self.user_table = dynamodb.Table('Users')
+    def __init__(self, dynamodb, table_prefix):
+        self.permissions_table = dynamodb.Table(f'{table_prefix}_Permissions')
+        self.groups_table = dynamodb.Table(f'{table_prefix}_Groups')
+        self.user_table = dynamodb.Table(f'{table_prefix}_Users')
 
     def _convert_permissions_to_strings(self, permissions):
         """Convert list of Permission enums to strings."""
         return [permission.value if isinstance(permission, Permission) else permission for permission in permissions]
+
+    def check_admin_permissions(self, user_id):
+        table = self.dynamodb.Table(self.permissions_table)
+        try:
+            response = table.get_item(Key={'id': user_id})  # Assuming 'id' is the primary key
+            user_permissions = response.get('Item', {}).get('permissions', [])
+            return 'ADMIN' in user_permissions
+        except Exception as e:
+            print(f"Error checking permissions for user {user_id}: {str(e)}")
+            return False
 
     def add_user_permissions(self, user_id, permissions):
         """Add permissions to a user."""
@@ -200,17 +217,8 @@ class PermissionsManager:
     def initialize_admin_permissions(self, admin_user_id):
         """Initialize permissions for an admin user."""
         try:
-            admin_permissions = [
-                Permission.ADD_USER_TO_GROUP,
-                Permission.REMOVE_USER_FROM_GROUP,
-                Permission.CREATE_GROUP,
-                Permission.MANAGE_PERMISSIONS,
-                Permission.UPLOAD_MODEL,
-                Permission.LIST_MODELS,
-                Permission.REMOVE_MODEL,
-                Permission.PREDICT,
-                Permission.DOWNLOAD_MODEL
-            ]
+            # Get all permissions from the Permission enum
+            admin_permissions = [permission for permission in Permission]
             self.add_user_permissions(admin_user_id, admin_permissions)
         except Exception as e:
             print(f"Error initializing admin permissions: {e}")

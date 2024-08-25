@@ -1,3 +1,6 @@
+- Restrict all superuser endpoints - if anyone other than superuser tries to access those endpoints then return not found.
+- Add subscription plans
+- Add team / organization management into the model workflow 
 - Limit number of characters in model description
 - Limit model size
     - one size for free tier
@@ -6,4 +9,14 @@
 - Limit rate flow of incoming data (be it model upload or other activity) to prevent DDOS attacks
 - Sanitize all input data
 - Ability for user to change email
+    - In this case they have to re-verify the email
 - Ability to update model description
+- Update all error messages to be user friendly and not reveal any internal details of the implementation, but at the same time log the errors for debugging purposes for admins.
+- Update email subect, body for different purposes appropriately
+- Implement UI
+- Deploy to cloud (possibly AWS based)
+- Implement automated CI CD pipeline
+- Purchase domain
+- Create full API documentation (using swagger etc.)
+- Add comprehensive unit tests
+- Advanced model version management (warning users of model_name and version colliding, automatic version increment etc.)

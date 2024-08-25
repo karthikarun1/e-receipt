@@ -1,4 +1,5 @@
 import os
+import io
 import joblib
 import json
 import jwt
@@ -9,9 +10,10 @@ import shutil
 import traceback
 import tempfile
 import time
-import utils
 
 import dynamodb_utils
+import s3_utils
+import utils
 
 # System defined
 from datetime import datetime
@@ -22,7 +24,8 @@ from prometheus_client import CollectorRegistry, Gauge, generate_latest, Summary
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 
-from user_management import UserManager  # Import UserManager from your user management module
+from user_management import UserManager
+
 
 # User defined
 from storage import MlModelStorage
@@ -38,11 +41,15 @@ load_dotenv()
 JWT_SECRET = os.getenv('JWT_SECRET')
 app.secret_key = JWT_SECRET  # needed for sessions to work
 
-# Initialize the UserManager globally
+# Initialize globally
 table_prefix = os.getenv('TABLE_PREFIX')
 dynamodb_resource = dynamodb_utils.get_dynamodb_resource()
 dynamodb_client = dynamodb_utils.get_dynamodb_client()
+s3_client = s3_utils.get_client()
 user_manager = UserManager(dynamodb_resource, table_prefix)
+metadata_table_name = f'{table_prefix}_' + os.getenv('METADATA_TABLE')
+metadata_store = MetadataStore(table_name=metadata_table_name)
+storage = MlModelStorage(metadata_store=metadata_store)
 
 # Create a prometheus metric
 registry = CollectorRegistry()
@@ -129,6 +136,63 @@ def token_required(f):
 def protected_resource(user):
     # This resource is protected and only accessible with a valid token and registered user
     return jsonify({'message': f'Welcome, {user["username"]}! This is a protected resource.'})
+
+
+@app.route('/change_password', methods=['POST'])
+@token_required
+def change_password(current_user):
+    data = request.get_json()
+
+    user_id = current_user['id']
+    current_password = data.get('current_password')
+    new_password = data.get('new_password')
+    confirm_new_password = data.get('confirm_new_password')
+
+    if not current_password or not new_password or not confirm_new_password:
+        return jsonify({"message": "Missing required fields"}), 400
+
+    try:
+        result = user_manager.change_password(
+            user_id=user_id,
+            current_password=current_password,
+            new_password=new_password,
+            confirm_new_password=confirm_new_password
+        )
+        
+        # Invalidate the token after a successful password change
+        token = request.headers['Authorization'].split(" ")[1]
+        user_manager.revoke_token(token)
+        
+        return jsonify(result), 200
+    except ValueError as e:
+        return jsonify({"message": str(e)}), 400
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"message": "An error occurred while changing the password"})
+
+
+@app.route('/resend_verification_email', methods=['POST'])
+def resend_verification_email():
+    try:
+        data = request.json
+        email = data.get('email')
+
+        if not email:
+            return bad_request('Email is required.')
+
+        if not utils.is_valid_email(email):
+            return bad_request(f'Email {email} is not of valid format.')
+
+        # Call the method in UserManager to handle the logic
+        user_manager.resend_verification_email(email)
+
+        # Always return a generic response
+        return jsonify({'status': 'success', 'message': 'If this email exists, a verification email has been sent.'}), 200
+
+    except Exception as e:
+        print(f"Error in resend_verification endpoint: {e}")
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': 'An unexpected error occurred. Please try again later.'}), 500
 
 
 @app.route('/forgot_password', methods=['POST'])
@@ -328,6 +392,52 @@ def list_dynamodb_tables():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+# superuser
+@app.route('/describe_table/<string:table_name>', methods=['GET'])
+def describe_table(table_name):
+    try:
+        # Use the DynamoDB client to describe the table
+        table_description = dynamodb_client.describe_table(TableName=table_name)
+
+        return jsonify({
+            'status': 'success',
+            'table_description': table_description
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
+# superuser
+@app.route('/list_s3_contents', methods=['GET'])
+def list_s3_contents():
+    try:
+        # Retrieve the bucket name from environment variables
+        bucket_name = os.getenv('S3_BUCKET_NAME')
+
+        # List objects in the S3 bucket
+        response = s3_client.list_objects_v2(Bucket=bucket_name)
+
+        if 'Contents' in response:
+            files = []
+            for obj in response['Contents']:
+                # Get additional details like ContentType (MIME type)
+                head_response = s3_client.head_object(Bucket=bucket_name, Key=obj['Key'])
+                files.append({
+                    'Key': obj['Key'],
+                    'LastModified': obj['LastModified'].isoformat(),
+                    'Size': obj['Size'],
+                    'ContentType': head_response['ContentType']
+                })
+            return jsonify({'status': 'success', 'files': files}), 200
+        else:
+            return jsonify({'status': 'success', 'files': []}), 200
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+
 # superuser 
 @app.route('/list_all_users', methods=['GET'])
 def list_all_users():
@@ -521,10 +631,72 @@ def create_model_metadata(user_id, model_name, version, file_extension,
     return metadata_path
 
 
-@app.route('/upload_model', methods=['POST'])
-def upload_model():
-    current_user = get_jwt_identity()
+@app.route('/remove_model/<string:model_name>/<string:version>', methods=['DELETE'])
+@token_required
+def remove_model_by_name_and_version(current_user, model_name, version):
+    try:
+        # Fetch the model metadata
+        user_id = current_user['id']
 
+        # Fetch the model metadata from DynamoDB
+        metadata = metadata_store.get_model_metadata_by_name_and_version(user_id, model_name, version)
+        if not metadata:
+            return jsonify({'status': 'error', 'message': 'Model not found.'}), 404
+
+        # Check if the current user is the owner of the model
+        if metadata['user_id'] != current_user['id']:
+            return jsonify({'status': 'error', 'message': 'Unauthorized to remove this model.'}), 403
+
+        # Get the S3 key for the model
+        s3_key = user_id + '/' + metadata['filename']
+
+        # Remove the model from S3
+        storage.remove_model_by_key(s3_key)
+
+        # Remove the model metadata from DynamoDB
+        metadata_store.remove_model_metadata_by_id(user_id, metadata['id'])
+
+        return jsonify({'status': 'success', 'message': 'Model removed successfully.'}), 200
+
+    except Exception as e:
+        print(f"Error removing model: {e}")
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': 'Failed to remove model. Please try again later.'}), 500
+
+
+@app.route('/remove_model/<string:model_id>', methods=['DELETE'])
+@token_required
+def remove_model_by_id(current_user, model_id):
+    try:
+        # Fetch the model metadata
+        user_id = current_user['id']
+        metadata = metadata_store.get_model_metadata_by_model_id(user_id, model_id)
+
+        if not metadata:
+            return jsonify({'status': 'error', 'message': 'Model not found.'}), 404
+
+        # Check if the current user is the owner of the model
+        if metadata['user_id'] != current_user['id']:
+            return jsonify({'status': 'error', 'message': 'Unauthorized to remove this model.'}), 403
+
+        # Remove the model from S3
+        s3_key = f"{metadata['user_id']}/{metadata['filename']}"
+        storage.remove_model_by_key(s3_key)
+
+        # Remove the model metadata from DynamoDB
+        metadata_store.remove_model_metadata_by_id(user_id, model_id)
+
+        return jsonify({'status': 'success', 'message': 'Model removed successfully.'}), 200
+
+    except Exception as e:
+        print(f"Error removing model: {e}")
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': 'Failed to remove model. Please try again later.'}), 500
+
+
+@app.route('/upload_model', methods=['POST'])
+@token_required
+def upload_model(current_user):
     # Check if request is JSON or form
     data = request.json if request.is_json else request.form
 
@@ -540,7 +712,7 @@ def upload_model():
         return bad_request('Model name is required')
 
     if not version:
-        return bad_request('version is required')
+        return bad_request('Version is required')
 
     if not model_file:
         return bad_request("Model file is required")
@@ -551,33 +723,101 @@ def upload_model():
 
     # Secure the file name and save it
     file_extension = model_file.filename.rsplit('.', 1)[-1].lower()
-    filename = f"{model_name}_{version}.{file_extension}"
-    file_path = os.path.join(LOCAL_DIR, filename)
+    filename = secure_filename(f"{model_name}_{version}.{file_extension}")
 
-    user_id = 'admin_user_id' 
-    group_id = None
-    success, error = MlModelStorage().save(
+    user_id = current_user['id']  # Get the user ID from the authenticated user
+
+    # Save model to S3 and metadata to DynamoDB using the MlModelStorage class
+    success, error = storage.save(
         filename,
         model_file,
         version,
         model_name,
         file_extension,
-        current_user, 
+        current_user['username'],
         user_id,
-        group_id,
-        description,
-        accuracy,
+        description=description,
+        accuracy=accuracy,
     )
 
-    if error:
-        return bad_request(f'Error: {error}. Unable to save model version '
-                           f'{version} for {model_name}')
+    if not success:
+        return bad_request(f'Error: {error}. Unable to save model version {version} for {model_name}')
 
     return jsonify({
+        'message': 'Model uploaded successfully',
         'model_name': model_name,
         'version': version,
     }), 201
 
+
+@app.route('/download_model/<model_id>', methods=['GET'])
+@token_required
+def download_model_by_id(current_user, model_id):
+    try:
+        # Get the user's ID from the JWT
+        user_id = current_user['id']
+        
+        # Fetch the model metadata from DynamoDB
+        model_metadata = metadata_store.get_model_metadata_by_model_id(user_id, model_id)
+        if not model_metadata:
+            return jsonify({'status': 'error', 'message': 'Model not found'}), 404
+        
+        # Get the S3 key for the model
+        s3_key = user_id + '/' + model_metadata['filename']
+        
+        # Fetch the model file from S3
+        bucket_name = os.getenv('S3_BUCKET_NAME')
+        s3_object = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
+        
+        # Prepare the file for download
+        file_stream = io.BytesIO(s3_object['Body'].read())
+        file_stream.seek(0)
+        
+        # Send the file to the user
+        return send_file(file_stream, as_attachment=True, download_name=s3_key, mimetype='application/octet-stream')
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/download_model/<model_name>/<version>', methods=['GET'])
+@token_required
+def download_model_by_name_and_version(current_user, model_name, version):
+    try:
+        # Get the user's ID from the JWT
+        user_id = current_user['id']
+        
+        # Fetch the model metadata from DynamoDB
+        model_metadata = metadata_store.get_model_metadata_by_name_and_version(user_id, model_name, version)
+        if not model_metadata:
+            return jsonify({'status': 'error', 'message': 'Model not found'}), 404
+
+        # Check if the current user is the owner of the model
+        if model_metadata['user_id'] != current_user['id']:
+            return jsonify({'status': 'error', 'message': 'Unauthorized to remove this model.'}), 403
+        
+        # Get the S3 key for the model
+        s3_key = user_id + '/' + model_metadata['filename']
+        
+        # Fetch the model file from S3
+        bucket_name = os.getenv('S3_BUCKET_NAME')
+        s3_object = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
+        
+        # Prepare the file for download
+        file_stream = io.BytesIO(s3_object['Body'].read())
+        file_stream.seek(0)
+        
+        # Send the file to the user
+        return send_file(file_stream, as_attachment=True, download_name=s3_key, mimetype='application/octet-stream')
+    except AttributeError as ae:
+        # Log the detailed error and return a user-friendly message
+        print(f"AttributeError: {ae}")
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': 'An internal error occurred. Please try again later.'}), 500
+    except Exception as e:
+        # Log the detailed error and return a user-friendly message
+        print(f"Unexpected error: {e}")
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': 'An unexpected error occurred. Please try again later.'}), 500
 
 def get_file_extension_from_metadata(model_name, version):
     """
@@ -604,63 +844,6 @@ def get_file_extension_from_metadata(model_name, version):
         metadata = json.load(f)
     
     return metadata_path, metadata.get('file_extension', None)
-
-
-@app.route('/download_model/<string:model_name>/<string:version>', methods=['GET'])
-def download_model(model_name, version):
-    current_user = get_jwt_identity()
-
-    if not model_name or not version:
-        return bad_request("Model name and version are required")
-
-    # Obtain file extension from metadata
-    metadata_path, file_extension = get_file_extension_from_metadata(model_name, version)
-
-    if metadata_path is None:
-        return not_found(f'Metadata for model {model_name} version '
-                         f'{version} not found')
-    if file_extension is None:
-        return not_found('File extension not found in metadata')
-
-    model_filename = f"{model_name}_{version}.{file_extension}"
-
-    # Construct the path to the model file
-    model_path = os.path.join(LOCAL_DIR, model_filename)
-
-    # Check if the model file exists
-    if os.path.exists(model_path):
-        return send_file(model_path, as_attachment=True)
-    else:
-        return not_found(f'Model {model_filename} version {version} not found')
-
-
-@app.route('/remove_model/<string:model_name>/<string:version>', methods=['DELETE'])
-def remove_model(model_name, version):
-    # Check if model_name and version are provided
-    if not model_name or not version:
-        return bad_request("Model name and version are required")
-
-    metadata_path, file_extension = get_file_extension_from_metadata(model_name, version)
-    model_filename = f'{model_name}_{version}.{file_extension}'
-    model_file_path = os.path.join(LOCAL_DIR, model_filename)
-
-    if metadata_path is None:
-        return not_found(f'Metadata for model {model_name} version '
-                         f'{version} not found')
-    if file_extension is None:
-        return not_found('File extension not found in metadata')
-
-    # Remove the model file
-    if os.path.exists(model_file_path):
-        os.remove(model_file_path)
-    else:
-        return not_found(f'Model file {model_filename} not found')
-
-    # Remove the metadata file
-    if os.path.exists(metadata_path):
-        os.remove(metadata_path)
-
-    return jsonify({'message': f'Removed model {model_filename} and metadata'}), 200
 
 
 def evaluate_prediction(model, input_data, expected_output=None):
@@ -765,28 +948,35 @@ def log_model_usage(model_name, version, input_data, output, prediction_accuracy
 
 
 @app.route('/list_models', methods=['GET'])
-def list_models():
-    models = {}
+@token_required
+def list_models(current_user):
+    try:
+        # Get the user's ID from the JWT
+        user_id = current_user['id']
+        
+        # Query the DynamoDB table for models belonging to this user
+        response = metadata_store.list_models_for_user(user_id)
 
-    if os.path.exists(LOCAL_DIR):
-        for filename in os.listdir(LOCAL_DIR):
-            file_path = os.path.join(LOCAL_DIR, filename)
-            if os.path.isfile(file_path):
-                # Extract model name and version from filename
-                base_name, ext = os.path.splitext(filename)
-                if ext.startswith('.'):
-                    ext = ext[1:]  # Remove leading dot
-                parts = base_name.rsplit('_', 1)
-                if len(parts) == 2:
-                    model_name, version = parts
-                    if version not in models:
-                        models[version] = []
-                    models[version].append({
-                        'model_name': model_name,
-                        'file_extension': ext
-                    })
+        # Return the list of models
+        return jsonify({'status': 'success', 'models': response.get('Items', [])}), 200
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
-    return jsonify(models), 200
+
+@app.route('/download_model/<string:model_name>/<string:version>', methods=['GET'])
+@token_required
+def download_model(current_user, model_name, version):
+    user_id = current_user['id']  # Get the user ID from the authenticated user
+
+    try:
+        model_file = storage.retrieve_model(user_id, model_name, version)
+        if model_file:
+            return send_file(model_file, as_attachment=True)
+        else:
+            return not_found(f'Model {model_name} version {version} not found')
+    except Exception as e:
+        return bad_request(f'Failed to download model: {str(e)}')
+
 
 @app.route('/verify_email', methods=['GET'])
 def verify_email():

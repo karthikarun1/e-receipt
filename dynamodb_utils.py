@@ -32,16 +32,17 @@ def get_dynamodb_client(region_name='us-west-2'):
 
 def drop_tables_with_prefix(dynamodb_resource, table_prefix):
     table_names = [
-        #f'{table_prefix}_Subscriptions',
-        #f'{table_prefix}_Organizations',
-        #f'{table_prefix}_Groups',
-        #f'{table_prefix}_Users',
-        #f'{table_prefix}_UserGroupMembership',
-        #f'{table_prefix}_EmailVerification',
-        #f'{table_prefix}_ResetTokens',
-        #f'{table_prefix}_Permissions',
-        #f'{table_prefix}_Invites',
+        f'{table_prefix}_Subscriptions',
+        f'{table_prefix}_Organizations',
+        f'{table_prefix}_Groups',
+        f'{table_prefix}_Users',
+        f'{table_prefix}_UserGroupMembership',
+        f'{table_prefix}_EmailVerification',
+        f'{table_prefix}_ResetTokens',
+        f'{table_prefix}_Permissions',
+        f'{table_prefix}_Invites',
         f'{table_prefix}_RevokedTokens',
+        f'{table_prefix}_MlModelMetadata',
     ]
     for table_name in table_names:
         try:
@@ -57,6 +58,31 @@ def drop_tables_with_prefix(dynamodb_resource, table_prefix):
                 print(f"Error deleting table {table_name}: {e}")
         except Exception as e:
             print(f"Error deleting table {table_name}: {e}")
+
+def create_mlmodel_metadata_table(dynamodb_resource, prefix):
+    table_name = f"{prefix}_MlModelMetadata"
+    try:
+        table = dynamodb_resource.create_table(
+            TableName=table_name,
+            KeySchema=[
+                {'AttributeName': 'user_id', 'KeyType': 'HASH'},  # Partition key
+                {'AttributeName': 'id', 'KeyType': 'RANGE'}  # Sort key
+            ],
+            AttributeDefinitions=[
+                {'AttributeName': 'user_id', 'AttributeType': 'S'},
+                {'AttributeName': 'id', 'AttributeType': 'S'}
+            ],
+            ProvisionedThroughput={
+                'ReadCapacityUnits': 5,
+                'WriteCapacityUnits': 5
+            }
+        )
+        table.wait_until_exists()
+        print(f"Table {table_name} created successfully.")
+    except dynamodb_resource.meta.client.exceptions.ResourceInUseException:
+        print(f"Table {table_name} already exists.")
+    except Exception as e:
+        print(f"Error creating table {table_name}: {str(e)}")
 
 
 def create_revokedtokens_table(dynamodb_resource, prefix):
@@ -77,216 +103,224 @@ def create_revokedtokens_table(dynamodb_resource, prefix):
     )
 
 
-def create_all_required_tables(dynamodb_resource, prefix):
+def create_users_table(dynamodb_resource, prefix):
+    # Create Users table
+    users_table = dynamodb_resource.create_table(
+        TableName=f"{prefix}_Users",
+        KeySchema=[
+            {'AttributeName': 'id', 'KeyType': 'HASH'}  # Partition key
+        ],
+        AttributeDefinitions=[
+            {'AttributeName': 'id', 'AttributeType': 'S'},
+            {'AttributeName': 'email', 'AttributeType': 'S'},
+            {'AttributeName': 'username', 'AttributeType': 'S'}  # Define the username attribute
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                'IndexName': 'email-index',
+                'KeySchema': [{'AttributeName': 'email', 'KeyType': 'HASH'}],
+                'Projection': {'ProjectionType': 'ALL'},
+                'ProvisionedThroughput': {
+                    'ReadCapacityUnits': 5,
+                    'WriteCapacityUnits': 5
+                }
+            },
+            {
+                'IndexName': 'username-index',
+                'KeySchema': [{'AttributeName': 'username', 'KeyType': 'HASH'}],
+                'Projection': {'ProjectionType': 'ALL'},
+                'ProvisionedThroughput': {
+                    'ReadCapacityUnits': 5,
+                    'WriteCapacityUnits': 5
+                }
+            }
+        ],
+        ProvisionedThroughput={
+            'ReadCapacityUnits': 5,
+            'WriteCapacityUnits': 5
+        }
+    )
+    users_table.wait_until_exists()
+    print("Users table created successfully.")
+    print(f"Table {prefix}_Users created successfully.")
+
+
+def create_subscriptions_table(dynamodb_resource, prefix):
+    subscriptions_table = dynamodb_resource.create_table(
+        TableName=f"{prefix}_Subscriptions",
+        KeySchema=[
+            {'AttributeName': 'id', 'KeyType': 'HASH'}  # Partition key
+        ],
+        AttributeDefinitions=[
+            {'AttributeName': 'id', 'AttributeType': 'S'}
+        ],
+        ProvisionedThroughput={
+            'ReadCapacityUnits': 5,
+            'WriteCapacityUnits': 5
+        }
+    )
+    subscriptions_table.wait_until_exists()
+    print(f"Table {prefix}_Subscriptions created successfully.")
+
+
+def create_permissions_table(dynamodb_resource, prefix):
+    permissions_table = dynamodb_resource.create_table(
+        TableName=f"{prefix}_Permissions",
+        KeySchema=[
+            {'AttributeName': 'id', 'KeyType': 'HASH'}  # Partition key
+        ],
+        AttributeDefinitions=[
+            {'AttributeName': 'id', 'AttributeType': 'S'}
+        ],
+        ProvisionedThroughput={
+            'ReadCapacityUnits': 5,
+            'WriteCapacityUnits': 5
+        }
+    )
+    permissions_table.wait_until_exists()
+    print(f"Table {prefix}_Permissions created successfully.")
+
+
+def create_organization_table(dynamodb_resource, prefix):
+    organizations_table = dynamodb_resource.create_table(
+        TableName=f"{prefix}_Organizations",
+        KeySchema=[
+            {'AttributeName': 'id', 'KeyType': 'HASH'}  # Partition key
+        ],
+        AttributeDefinitions=[
+            {'AttributeName': 'id', 'AttributeType': 'S'}
+        ],
+        ProvisionedThroughput={
+            'ReadCapacityUnits': 5,
+            'WriteCapacityUnits': 5
+        }
+    )
+    organizations_table.wait_until_exists()
+    print(f"Table {prefix}_Organizations created successfully.")
+
+
+def create_groups_table(dynamodb_resource, prefix):
+    groups_table = dynamodb_resource.create_table(
+        TableName=f"{prefix}_Groups",
+        KeySchema=[
+            {'AttributeName': 'id', 'KeyType': 'HASH'}  # Partition key
+        ],
+        AttributeDefinitions=[
+            {'AttributeName': 'id', 'AttributeType': 'S'}
+        ],
+        ProvisionedThroughput={
+            'ReadCapacityUnits': 5,
+            'WriteCapacityUnits': 5
+        }
+    )
+    groups_table.wait_until_exists()
+    print(f"Table {prefix}_Groups created successfully.")
+
+
+def create_groups_membership_table(dynamodb_resource, prefix):
+    user_group_membership_table = dynamodb_resource.create_table(
+        TableName=f"{prefix}_UserGroupMembership",
+        KeySchema=[
+            {'AttributeName': 'user_id', 'KeyType': 'HASH'},  # Partition key
+            {'AttributeName': 'group_id', 'KeyType': 'RANGE'}  # Sort key
+        ],
+        AttributeDefinitions=[
+            {'AttributeName': 'user_id', 'AttributeType': 'S'},
+            {'AttributeName': 'group_id', 'AttributeType': 'S'}
+        ],
+        ProvisionedThroughput={
+            'ReadCapacityUnits': 5,
+            'WriteCapacityUnits': 5
+        }
+    )
+    user_group_membership_table.wait_until_exists()
+
+
+def create_email_verification_table(dynamodb_resource, prefix):
+    email_verification_table = dynamodb_resource.create_table(
+        TableName=f'{prefix}_EmailVerification',
+        KeySchema=[
+            {'AttributeName': 'verification_code', 'KeyType': 'HASH'}  # Partition key
+        ],
+        AttributeDefinitions=[
+            {'AttributeName': 'verification_code', 'AttributeType': 'S'},
+            {'AttributeName': 'email', 'AttributeType': 'S'}  # Attribute for GSI
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                'IndexName': 'email-index',  # Name of the GSI
+                'KeySchema': [{'AttributeName': 'email', 'KeyType': 'HASH'}],
+                'Projection': {'ProjectionType': 'ALL'},  # Project all attributes
+                'ProvisionedThroughput': {
+                    'ReadCapacityUnits': 5,
+                    'WriteCapacityUnits': 5
+                }
+            }
+        ],
+        ProvisionedThroughput={
+            'ReadCapacityUnits': 5,
+            'WriteCapacityUnits': 5
+        }
+    )
+    email_verification_table.wait_until_exists()
+    print(f"Table {prefix}_EmailVerification created successfully with GSI on email.")
+
+
+def create_reset_tokens_table(dynamodb_resource, prefix):
+    reset_tokens_table = dynamodb_resource.create_table(
+        TableName=f"{prefix}_ResetTokens",
+        KeySchema=[
+            {'AttributeName': 'token', 'KeyType': 'HASH'}  # Partition key
+        ],
+        AttributeDefinitions=[
+            {'AttributeName': 'token', 'AttributeType': 'S'}
+        ],
+        ProvisionedThroughput={
+            'ReadCapacityUnits': 5,
+            'WriteCapacityUnits': 5
+        }
+    )
+    reset_tokens_table.wait_until_exists()
+    print(f"Table {prefix}_ResetTokens created successfully.")
+
+
+def create_invites_table(dynamodb_resource, prefix):
+    invites_table = dynamodb_resource.create_table(
+        TableName=f"{prefix}_Invites",
+        KeySchema=[
+            {'AttributeName': 'invite_id', 'KeyType': 'HASH'}  # Partition key
+        ],
+        AttributeDefinitions=[
+            {'AttributeName': 'invite_id', 'AttributeType': 'S'}
+        ],
+        ProvisionedThroughput={
+            'ReadCapacityUnits': 5,
+            'WriteCapacityUnits': 5
+        }
+    )
+    invites_table.wait_until_exists()
+    print(f"Table {prefix}_Invites created successfully.")
+
+
+def create_all_tables(dynamodb_resource, prefix):
     try:
-        # Create Subscriptions table
-        subscriptions_table = dynamodb_resource.create_table(
-            TableName=f"{prefix}_Subscriptions",
-            KeySchema=[
-                {'AttributeName': 'id', 'KeyType': 'HASH'}  # Partition key
-            ],
-            AttributeDefinitions=[
-                {'AttributeName': 'id', 'AttributeType': 'S'}
-            ],
-            ProvisionedThroughput={
-                'ReadCapacityUnits': 5,
-                'WriteCapacityUnits': 5
-            }
-        )
-        subscriptions_table.wait_until_exists()
-        print(f"Table {prefix}_Subscriptions created successfully.")
-
-        # Create Users table
-        users_table = dynamodb_resource.create_table(
-            TableName=f"{prefix}_Users",
-            KeySchema=[
-                {'AttributeName': 'id', 'KeyType': 'HASH'}  # Partition key
-            ],
-            AttributeDefinitions=[
-                {'AttributeName': 'id', 'AttributeType': 'S'},
-                {'AttributeName': 'email', 'AttributeType': 'S'},
-                {'AttributeName': 'username', 'AttributeType': 'S'}  # Define the username attribute
-            ],
-            GlobalSecondaryIndexes=[
-                {
-                    'IndexName': 'email-index',
-                    'KeySchema': [{'AttributeName': 'email', 'KeyType': 'HASH'}],
-                    'Projection': {'ProjectionType': 'ALL'},
-                    'ProvisionedThroughput': {
-                        'ReadCapacityUnits': 5,
-                        'WriteCapacityUnits': 5
-                    }
-                },
-                {
-                    'IndexName': 'username-index',
-                    'KeySchema': [{'AttributeName': 'username', 'KeyType': 'HASH'}],
-                    'Projection': {'ProjectionType': 'ALL'},
-                    'ProvisionedThroughput': {
-                        'ReadCapacityUnits': 5,
-                        'WriteCapacityUnits': 5
-                    }
-                }
-            ],
-            ProvisionedThroughput={
-                'ReadCapacityUnits': 5,
-                'WriteCapacityUnits': 5
-            }
-        )
-        users_table.wait_until_exists()
-        print("Users table created successfully.")
-        print(f"Table {prefix}_Users created successfully.")
-
-        # Create Permissions table
-        permissions_table = dynamodb_resource.create_table(
-            TableName=f"{prefix}_Permissions",
-            KeySchema=[
-                {'AttributeName': 'id', 'KeyType': 'HASH'}  # Partition key
-            ],
-            AttributeDefinitions=[
-                {'AttributeName': 'id', 'AttributeType': 'S'}
-            ],
-            ProvisionedThroughput={
-                'ReadCapacityUnits': 5,
-                'WriteCapacityUnits': 5
-            }
-        )
-        permissions_table.wait_until_exists()
-        print(f"Table {prefix}_Permissions created successfully.")
-
-        # Create Organizations table
-        organizations_table = dynamodb_resource.create_table(
-            TableName=f"{prefix}_Organizations",
-            KeySchema=[
-                {'AttributeName': 'id', 'KeyType': 'HASH'}  # Partition key
-            ],
-            AttributeDefinitions=[
-                {'AttributeName': 'id', 'AttributeType': 'S'}
-            ],
-            ProvisionedThroughput={
-                'ReadCapacityUnits': 5,
-                'WriteCapacityUnits': 5
-            }
-        )
-        organizations_table.wait_until_exists()
-        print(f"Table {prefix}_Organizations created successfully.")
-
-        # Create Groups table
-        groups_table = dynamodb_resource.create_table(
-            TableName=f"{prefix}_Groups",
-            KeySchema=[
-                {'AttributeName': 'id', 'KeyType': 'HASH'}  # Partition key
-            ],
-            AttributeDefinitions=[
-                {'AttributeName': 'id', 'AttributeType': 'S'}
-            ],
-            ProvisionedThroughput={
-                'ReadCapacityUnits': 5,
-                'WriteCapacityUnits': 5
-            }
-        )
-        groups_table.wait_until_exists()
-        print(f"Table {prefix}_Groups created successfully.")
-
-        print("All required tables created successfully.")
-
-        # Create UserGroupMembership table
-        user_group_membership_table = dynamodb_resource.create_table(
-            TableName=f"{prefix}_UserGroupMembership",
-            KeySchema=[
-                {'AttributeName': 'user_id', 'KeyType': 'HASH'},  # Partition key
-                {'AttributeName': 'group_id', 'KeyType': 'RANGE'}  # Sort key
-            ],
-            AttributeDefinitions=[
-                {'AttributeName': 'user_id', 'AttributeType': 'S'},
-                {'AttributeName': 'group_id', 'AttributeType': 'S'}
-            ],
-            ProvisionedThroughput={
-                'ReadCapacityUnits': 5,
-                'WriteCapacityUnits': 5
-            }
-        )
-        user_group_membership_table.wait_until_exists()
-        print(f"Table {prefix}_UserGroupMembership created successfully.")
-
-        email_verification_table = dynamodb_resource.create_table(
-            TableName=f'{prefix}_EmailVerification',
-            KeySchema=[
-                {'AttributeName': 'verification_code', 'KeyType': 'HASH'}  # Partition key
-            ],
-            AttributeDefinitions=[
-                {'AttributeName': 'verification_code', 'AttributeType': 'S'},
-                {'AttributeName': 'email', 'AttributeType': 'S'}  # Attribute for GSI
-            ],
-            GlobalSecondaryIndexes=[
-                {
-                    'IndexName': 'EmailIndex',  # Name of the GSI
-                    'KeySchema': [{'AttributeName': 'email', 'KeyType': 'HASH'}],
-                    'Projection': {'ProjectionType': 'ALL'},  # Project all attributes
-                    'ProvisionedThroughput': {
-                        'ReadCapacityUnits': 5,
-                        'WriteCapacityUnits': 5
-                    }
-                }
-            ],
-            ProvisionedThroughput={
-                'ReadCapacityUnits': 5,
-                'WriteCapacityUnits': 5
-            }
-        )
-        email_verification_table.wait_until_exists()
-        print(f"Table {prefix}_EmailVerification created successfully with GSI on email.")
-
-        # Create ResetTokens table
-        reset_tokens_table = dynamodb_resource.create_table(
-            TableName=f"{prefix}_ResetTokens",
-            KeySchema=[
-                {'AttributeName': 'token', 'KeyType': 'HASH'}  # Partition key
-            ],
-            AttributeDefinitions=[
-                {'AttributeName': 'token', 'AttributeType': 'S'}
-            ],
-            ProvisionedThroughput={
-                'ReadCapacityUnits': 5,
-                'WriteCapacityUnits': 5
-            }
-        )
-        reset_tokens_table.wait_until_exists()
-        print(f"Table {prefix}_ResetTokens created successfully.")
-
-        # Create Invites table
-        invites_table = dynamodb_resource.create_table(
-            TableName=f"{prefix}_Invites",
-            KeySchema=[
-                {'AttributeName': 'invite_id', 'KeyType': 'HASH'}  # Partition key
-            ],
-            AttributeDefinitions=[
-                {'AttributeName': 'invite_id', 'AttributeType': 'S'}
-            ],
-            ProvisionedThroughput={
-                'ReadCapacityUnits': 5,
-                'WriteCapacityUnits': 5
-            }
-        )
-        invites_table.wait_until_exists()
-        print(f"Table {prefix}_Invites created successfully.")
-
-        # If you want to implement a more secure logout by revoking the token, you can use a denylist approach:
-        # Create a RevokedTokens Table in DynamoDB: 
-        denylist_table = dynamodb.create_table(
-            TableName=f"{prefix}_RevokedTokens",
-            KeySchema=[{'AttributeName': 'token', 'KeyType': 'HASH'}],
-            AttributeDefinitions=[{'AttributeName': 'token', 'AttributeType': 'S'}],
-            ProvisionedThroughput={'ReadCapacityUnits': 5, 'WriteCapacityUnits': 5}
-        )
-        denylist_table.wait_until_exists()
-
-
+        create_mlmodel_metadata_table(dynamodb_resource, prefix)
+        create_revokedtokens_table(dynamodb_resource, prefix)
+        create_users_table(dynamodb_resource, prefix)
+        create_subscriptions_table(dynamodb_resource, prefix)
+        create_permissions_table(dynamodb_resource, prefix)
+        create_organization_table(dynamodb_resource, prefix)
+        create_groups_table(dynamodb_resource, prefix)
+        create_groups_membership_table(dynamodb_resource, prefix)
+        create_email_verification_table(dynamodb_resource, prefix)
+        create_reset_tokens_table(dynamodb_resource, prefix)
+        create_invites_table(dynamodb_resource, prefix)
     except Exception as e:
         print(f"Error creating tables: {str(e)}")
         traceback.print_exc()  # This prints the full stack trace
 
 
-def wipe_out_all_tables(dynamodb_client):
+def drop_all_tables(dynamodb_client):
     try:
         # List all tables
         response = dynamodb_client.list_tables()
@@ -305,7 +339,6 @@ def wipe_out_all_tables(dynamodb_client):
             print(f"Table {table_name} dropped successfully.")
         
         print("All tables wiped out successfully.")
-
     except Exception as e:
         print(f"Error wiping out tables: {str(e)}")
 
@@ -390,16 +423,9 @@ def clear_dynamodb_table(dynamodb, table_name):
 # Example usage
 if __name__ == "__main__":
     # Initialize DynamoDB resource and client
+    table_prefix = 'Dev'
     dynamodb_resource = boto3.resource('dynamodb', endpoint_url='http://localhost:8000', region_name='us-east-1')
     dynamodb_client = boto3.client('dynamodb', endpoint_url='http://localhost:8000', region_name='us-east-1')
 
-    #drop_tables_with_prefix(dynamodb_resource, 'Dev')
-    create_revokedtokens_table(dynamodb_resource, 'Dev')
-
-    # Example usage of utility functions
-    #print("DynamoDB Tables:")
-    #print(list_dynamodb_tables(dynamodb_client))
-
-    #table_name = 'MyTable'
-    #print(f"\nItems in table '{table_name}':")
-    #print(list_dynamodb_items(table_name, dynamodb_resource))
+    drop_all_tables(dynamodb_client)
+    create_all_tables(dynamodb_resource, table_prefix)

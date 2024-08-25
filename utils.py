@@ -1,7 +1,9 @@
 import boto3
 import jwt
+import inspect
 import logging
 import os
+import re
 import time
 import traceback
 
@@ -219,3 +221,25 @@ def get_remaining_time_for_token(token, secret_key):
         return {"error": "Token has already expired"}
     except jwt.InvalidTokenError:
         return {"error": "Invalid token"}
+
+# decorator function to print all arguments of a python function
+def print_function_arguments(func):
+    def wrapper(*args, **kwargs):
+        # Get the function signature
+        sig = inspect.signature(func)
+        bound_args = sig.bind(*args, **kwargs)
+        
+        # Print all arguments with their names and values
+        print(f"Arguments for function {func.__name__}:")
+        for name, value in bound_args.arguments.items():
+            print(f"{name}: {value}")
+        
+        # Call the actual function
+        return func(*args, **kwargs)
+    return wrapper
+
+
+def is_valid_email(email):
+    # Regular expression for validating an email
+    email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(email_regex, email) is not None

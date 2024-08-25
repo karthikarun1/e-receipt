@@ -4,6 +4,8 @@ import hashlib
 import os
 import uuid
 import time
+import re
+import traceback
 import traceback
 import utils
 
@@ -36,6 +38,7 @@ class UserManager:
         self.user_group_membership_table = dynamodb.Table(f'{table_prefix}_UserGroupMembership')
         self.verification_table = dynamodb.Table(f'{table_prefix}_EmailVerification')
         self.reset_tokens_table = dynamodb.Table(f'{table_prefix}_ResetTokens')
+        self.revoked_tokens_table = dynamodb.Table(f'{table_prefix}_RevokedTokens')
         self.jwt_secret = os.getenv('JWT_SECRET')
 
     def _hash_password(self, password):
@@ -61,6 +64,57 @@ class UserManager:
             KeyConditionExpression=Key('email').eq(email)
         )
         return len(response.get('Items', [])) > 0
+
+    def resend_verification_email(self, email):
+        """Resend the email verification link, creating a new entry if none exists."""
+        try:
+            # Query using the GSI to find the item by email
+            response = self.verification_table.query(
+                IndexName='email-index',
+                KeyConditionExpression=Key('email').eq(email)
+            )
+            items = response.get('Items', [])
+            
+            if not items:
+                # If no verification entry exists, create a new one
+                verification_code = str(uuid.uuid4())
+                expires_at = int(time.time()) + 3600  # New code valid for 1 hour
+
+                self.verification_table.put_item(
+                    Item={
+                        'email': email,
+                        'verification_code': verification_code,
+                        'expires_at': expires_at
+                    }
+                )
+            else:
+                # If an entry exists, check its expiration
+                item = items[0]
+                current_time = int(time.time())
+                if current_time > item['expires_at']:
+                    # Code has expired, generate a new one
+                    verification_code = self._generate_verification_code()
+                    expires_at = current_time + 3600  # New code valid for 1 hour
+
+                    # Update the table with the new code and expiration time
+                    self.verification_table.put_item(
+                        Item={
+                            'email': email,
+                            'verification_code': verification_code,
+                            'expires_at': expires_at
+                        }
+                    )
+                else:
+                    # Code is still valid
+                    verification_code = item['verification_code']
+
+            # Resend the verification email
+            self._send_verification_email(email, verification_code)
+
+        except Exception as e:
+            print(f"Error resending verification email: {e}")
+            traceback.print_exc()
+            raise  # Let the calling function handle the HTTP response
 
     def _send_verification_email(self, email, verification_code):
         """Send verification email with a code using EmailUtil."""
@@ -204,6 +258,9 @@ class UserManager:
 
     def register_user(self, username, email, password, confirm_password):
         """Register a new user with username, email, and password."""
+        if not utils.is_valid_email(email):
+            raise ValueError(f'Email {email} is invalid.')
+
         if password != confirm_password:
             raise ValueError("Passwords do not match.")
 
@@ -577,6 +634,48 @@ class UserManager:
 
         # Permission not found
         return False
+
+
+    def change_password(self, user_id, current_password, new_password, confirm_new_password):
+        # Fetch the user's details
+        response = self.users_table.get_item(Key={'id': user_id})
+        user = response.get('Item')
+
+        if not user:
+            raise ValueError("User not found")
+
+        # Check if the current password is correct
+        if not bcrypt.checkpw(current_password.encode('utf-8'), user['password'].encode('utf-8')):
+            raise ValueError("Current password is incorrect")
+
+        # Check if the new password and confirm password match
+        if new_password != confirm_new_password:
+            raise ValueError("New password and confirm password do not match")
+
+        # Check if the new password and current password are different
+        if new_password == current_password:
+            raise ValueError("No password change detected")
+
+        # Hash the new password
+        hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+        # Update the password in the database
+        self.users_table.update_item(
+            Key={'id': user_id},
+            UpdateExpression="set password = :p",
+            ExpressionAttributeValues={':p': hashed_password}
+        )
+
+        return {"message": "Password changed successfully"}
+
+    def revoke_token(self, token):
+        # Add the token to the RevokedTokens table
+        self.revoked_tokens_table.put_item(
+            Item={
+                'token': token,
+                'revoked_at': int(time.time())  # Store the time of revocation
+            }
+        )
 
 
 # Example usage:

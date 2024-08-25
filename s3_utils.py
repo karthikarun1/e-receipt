@@ -1,6 +1,20 @@
 import boto3
+import os
+
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
+
+from dotenv import load_dotenv
+# Load environment variables from .env file
+load_dotenv()
+
+
+def get_client():      
+    storage_type = os.getenv('STORAGE_TYPE')
+    if storage_type == 'local_s3':
+        return boto3.client('s3', endpoint_url='http://localhost:4566')
+    else:
+        return boto3.client('s3')
 
 
 def list_s3_objects(bucket_name, s3_client):

@@ -1,10 +1,14 @@
 # metadata_store.py
 
 import boto3
+import dynamodb_utils
 import json
 import os
+import traceback
 
+from boto3.dynamodb.conditions import Key  # Add this import statement
 from dotenv import load_dotenv
+
 load_dotenv()
 
 database_location = os.getenv('DATABASE_LOCATION').lower()
@@ -12,61 +16,57 @@ database_type = os.getenv('DATABASE_TYPE').lower()
 local_dir = os.getenv('LOCAL_DIR').lower()
 
 
-def save_metadata_to_file(metadata):
-    """
-    Creates and saves metadata for the uploaded model.
-
-    Args:
-        model_filename (str): The filename of the uploaded model.
-        version (str): The version of the uploaded model.
-        description (str, optional): Description of the model.
-        accuracy (float, optional): Accuracy of the model.
-        current_user (str, optional): Username of the person uploading the model.
-
-    Returns:
-        str: Path to the metadata file.
-    """
-    # Define metadata file path
-    model_name = metadata['model_name']
-    version = metadata['version']
-    user_id = metadata['user_id']
-    metadata_filename = f"{model_name}_{version}_metadata.json"  # Adjust versioning as needed
-    metadata_path = os.path.join(local_dir, user_id, metadata_filename)
-    
-    # Save metadata to file
-    with open(metadata_path, 'w') as f:
-        json.dump(metadata, f, indent=4)
-    
-    return metadata_path
-
-
 class MetadataStore:
-    def __init__(self, table_name=None, group_table_name=None):
-        self.set_dynamo_db(os.getenv('DATABASE_LOCATION', 'local'))
-        table_name = table_name or os.getenv('METADATA_TABLE')
-        self.table = self.dynamodb.Table(table_name)
-        
-        # Initialize the user-groups table
-        group_table_name = group_table_name or os.getenv('GROUP_TABLE')
-        self.group_table = self.dynamodb.Table(group_table_name)
 
-    def set_dynamo_db(self, database_location):
-        if database_location == 'local':
-            self.dynamodb = boto3.resource(
-                'dynamodb',
-                endpoint_url='http://localhost:8000'  # Point to local DynamoDB
-            )
-        else:  # Connect to remote db by inputting proper URL
-            self.dynamodb = boto3.resource('dynamodb')
+    def __init__(self, dynamodb_resource=None, table_name=None):
+        self.table_name = table_name
+        self.dynamodb_resource = (
+            dynamodb_resource or dynamodb_utils.get_dynamodb_resource())
+        table_name = table_name or os.getenv('METADATA_TABLE')
+        self.table = self.dynamodb_resource.Table(table_name)
+        
 
     def save_metadata(self, metadata):
-        # Ensure metadata includes user_id and group_id
-        if 'user_id' not in metadata or 'group_id' not in metadata:
-            raise ValueError("Metadata must include 'user_id' and 'group_id'")
-        
+        print (f'----------table is {self.table}')
+        print (f'----------data is  {metadata}')
         self.table.put_item(Item=metadata)
+        return True
 
-    def get_model_metadata(self, model_id, user_id):
+    def get_model_metadata_by_model_id(self, user_id, model_id):
+        try:
+            table = self.dynamodb_resource.Table(self.table_name)
+            response = table.get_item(
+                Key={
+                    'user_id': user_id,
+                    'id': model_id
+                }
+            )
+            return response.get('Item')
+        except Exception as e:
+            print(f"Error fetching model metadata for user {user_id}, model {model_id}: {e}")
+            traceback.print_exc()
+            raise
+
+    def get_model_metadata_by_name_and_version(self, user_id, model_name, version):
+        try:
+            # Construct the composite key
+            model_id = f"{model_name}-{version}-{user_id}"
+        
+            # Query the table using the composite key
+            table = self.dynamodb_resource.Table('Dev_MlModelMetadata')  # Use your actual table name
+            response = table.get_item(
+                Key={
+                    'user_id': user_id,  # Partition Key
+                    'id': model_id       # Sort Key (composite key)
+                }
+            )
+            return response.get('Item')
+        except Exception as e:
+            print(f"Error fetching model metadata for user {user_id}, model {model_name}, version {version}: {e}")
+            traceback.print_exc()
+            raise
+
+    def get_model_metadata_old(self, model_id, user_id):
         """
         Get model metadata and check if the user has access to it.
         
@@ -96,6 +96,48 @@ class MetadataStore:
         except Exception as e:
             print(f"Error retrieving user groups: {e}")
             return []
+
+
+    def list_models_for_user(self, user_id):
+        #try:
+        print (f'------------user_id {user_id}')
+        print (f'------------table name is {self.table_name}')
+        table = self.dynamodb_resource.Table(self.table_name)
+        response = table.query(
+            KeyConditionExpression=Key('user_id').eq(user_id)
+        )
+
+        #Ensure that response['Items'] is handled correctly
+        if 'Items' in response and isinstance(response['Items'], list):
+            return response
+        else:
+            return {'Items': []}  # Return an empty list if no items found or if response is not as expected
+        #except Exception as e:
+        #    print(f"Error listing models for user {user_id}: {e}")
+        #    traceback.print_exc()
+        #    raise
+
+    def remove_model_metadata_by_id(self, user_id, model_id):
+        """
+        Remove model metadata from the DynamoDB table by model_id.
+
+        :param user_id: The ID of the user who owns the model.
+        :param model_id: The ID of the model to be removed.
+        """
+        try:
+            table = self.dynamodb_resource.Table(self.table_name)
+            table.delete_item(
+                Key={
+                    'user_id': user_id,
+                    'id': model_id
+                }
+            )
+            print(f"Model metadata with ID '{model_id}' successfully removed from DynamoDB.")
+        except Exception as e:
+            print(f"Error removing model metadata from DynamoDB: {e}")
+            traceback.print_exc()
+            raise
+
 
 # Example usage
 if __name__ == "__main__":

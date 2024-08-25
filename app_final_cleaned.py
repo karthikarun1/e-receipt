@@ -79,7 +79,6 @@ logger.setLevel(numeric_level)
 app.logger.setLevel(numeric_level)
 
 DETAILED_LOGGING = os.getenv('DETAILED_LOGGING', 'false').lower() == 'true'
-LOG_VALUEERROR = os.getenv('LOG_VALUEERROR', 'false').lower() == 'true'
 
 USAGE_LOG_FILE_NAME='usage_logs.txt'
 
@@ -123,43 +122,30 @@ def metrics():
 
 
 # Middleware to redirect logged-in users away from unauthenticated pages
+# Middleware to redirect logged-in users away from unauthenticated pages
 def redirect_if_logged_in(f):
     @functools.wraps(f)
     def decorated_function(*args, **kwargs):
         token = session.get('token')
         if token:
-            try:
-                # Decode the token using the JWT secret
-                data = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
-                user_id = data['user_id']
+            # Decode the token using the JWT secret
+            data = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
+            user_id = data['user_id']
 
-                # Check if the token is revoked
-                response = user_manager.revoked_tokens_table.get_item(Key={'token': token})
-                if 'Item' in response:
-                    logger.error(f'Token has been revoked for user_id: {user_id}')
-                    return redirect(url_for('home'))  # Redirect to home page
-
-                # Check if the user exists in the database
-                user = user_manager.get_user_details_by_id(user_id)
-                if not user:
-                    logger.error(f'User not found for user_id: {user_id}')
-                    return redirect(url_for('home'))  # Redirect to home page
-
-                # If everything is valid, redirect the user
+            # Check if the token is revoked
+            response = user_manager.revoked_tokens_table.get_item(Key={'token': token})
+            if 'Item' in response:
+                logger.error(f'Token has been revoked for user_id: {user_id}')
                 return redirect(url_for('home'))  # Redirect to home page
 
-            except jwt.ExpiredSignatureError:
-                # Handle expired token
-                logger.error(f'Token has expired for user_id: {user_id}')
+            # Check if the user exists in the database
+            user = user_manager.get_user_details_by_id(user_id)
+            if not user:
+                logger.error(f'User not found for user_id: {user_id}')
                 return redirect(url_for('home'))  # Redirect to home page
-            except jwt.InvalidTokenError:
-                # Handle invalid token
-                logger.error(f'Token is invalid for user_id: {user_id}')
-                return redirect(url_for('home'))  # Redirect to home page
-            except Exception as e:
-                logger.error(f"An unexpected error occurred for user_id: {user_id}: {e}")
-                traceback.print_exc()
-                return redirect(url_for('home'))  # Redirect to home page
+
+            # If everything is valid, redirect the user
+            return redirect(url_for('home'))  # Redirect to home page
 
         return f(*args, **kwargs)
     return decorated_function
@@ -186,15 +172,18 @@ def token_required(f):
         if 'Item' in response:
             return jsonify({'message': 'Token has been revoked!'}), 401
 
-        # Decode the token using the secret
-        data = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
-        user_id = data['user_id']
+                    # Decode the token using the secret
+            data = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
+            user_id = data['user_id']
 
-        # Check if the user exists in the database
-        user = user_manager.get_user_details_by_id(user_id)
-        if not user:
-            #return jsonify({'message': 'User not found!'}), 401
-            return jsonify({'message': 'Invalid username or email or password!'}), 401
+            # Check if the user exists in the database
+            user = user_manager.get_user_details_by_id(user_id)
+            if not user:
+                return jsonify({'message': 'User not found!'}), 401
+
+                    print(f"An unexpected error occurred: {e}")
+            
+            return jsonify({'message': 'An error occurred during authentication.'}), 500
 
         return f(user, *args, **kwargs)
 
@@ -222,34 +211,38 @@ def change_password(current_user):
     if not current_password or not new_password or not confirm_new_password:
         return jsonify({"message": "Missing required fields"}), 400
 
-    result = user_manager.change_password(
-        user_id=user_id,
-        current_password=current_password,
-        new_password=new_password,
-        confirm_new_password=confirm_new_password
-    )
+            result = user_manager.change_password(
+            user_id=user_id,
+            current_password=current_password,
+            new_password=new_password,
+            confirm_new_password=confirm_new_password
+        )
         
-    # Invalidate the token after a successful password change
-    token = request.headers['Authorization'].split(" ")[1]
-    user_manager.revoke_token(token)
+        # Invalidate the token after a successful password change
+        token = request.headers['Authorization'].split(" ")[1]
+        user_manager.revoke_token(token)
         
-    return jsonify(result), 200
+        return jsonify(result), 200
 
 
 @app.route('/resend_verification_email', methods=['POST'])
 @redirect_if_logged_in
 def resend_verification_email():
-    data = get_request_data()
-    identifier = data.get('identifier')
+            data = get_request_data()
+        identifier = data.get('identifier')
 
-    if not identifier:
-        return bad_request('Email or Username is required.')
+        if not identifier:
+            return bad_request('Email or Username is required.')
 
-    # Call the method in UserManager to handle the logic
-    user_manager.resend_verification_email(identifier)
+        # Call the method in UserManager to handle the logic
+        user_manager.resend_verification_email(identifier)
 
-    # Always return a generic response
-    return jsonify({'status': 'success', 'message': 'If the user exists, a verification email has been sent.'}), 200
+        # Always return a generic response
+        return jsonify({'status': 'success', 'message': 'If the user exists, a verification email has been sent.'}), 200
+
+            print(f"Error in resend_verification endpoint: {e}")
+        
+        return jsonify({'status': 'error', 'message': 'An unexpected error occurred. Please try again later.'}), 500
 
 
 @app.route('/forgot_password', methods=['POST'])
@@ -261,8 +254,9 @@ def forgot_password():
     if not identifier:
         return bad_request('Email or Username is required.')
 
-    user_manager.request_password_reset(identifier=identifier)
-    return jsonify({'message': 'Password reset link sent if the provided information is correct.'}), 200
+            user_manager.request_password_reset(identifier=identifier)
+        return jsonify({'message': 'Password reset link sent if the provided information is correct.'}), 200
+            return bad_request(f'Failed to initiate password reset: {str(e)}')
 
 
 @app.route('/forgot_password', methods=['POST'])
@@ -274,8 +268,9 @@ def forgot_password_by_email():
     if not email:
         return bad_request('Email is required.')
 
-    user_manager.request_password_reset(email)
-    return jsonify({'message': 'Password reset link sent to your email.'}), 200
+            user_manager.request_password_reset(email)
+        return jsonify({'message': 'Password reset link sent to your email.'}), 200
+            return bad_request(f'Failed to initiate password reset: {str(e)}')
 
 @app.route('/reset_password', methods=['GET', 'POST'])
 @redirect_if_logged_in
@@ -292,35 +287,38 @@ def handle_reset_password_get_verify_token():
 
 
     # Validate the token immediately
-    response = user_manager.reset_tokens_table.get_item(Key={'token': token})
-    token_data = response.get('Item')
+            response = user_manager.reset_tokens_table.get_item(Key={'token': token})
+        token_data = response.get('Item')
 
-    if not token_data:
-        return bad_request('Invalid reset token.')
-    if int(time.time()) > token_data['expires_at']:
-        return bad_request('Reset token has expired.')
+        if not token_data:
+            return bad_request('Invalid reset token.')
+        if int(time.time()) > token_data['expires_at']:
+            return bad_request('Reset token has expired.')
 
-    # If token is valid, show the form without displaying the email
-    html_form = '''
-        <!doctype html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <title>Reset Password</title>
-        </head>
-        <body>
-            <h2>Reset Your Password</h2>
-            <form action="/reset_password" method="post">
-                <input type="hidden" name="token" value="{0}">
-                <label for="new_password">New Password:</label><br>
-                <input type="password" id="new_password" name="new_password" required><br><br>
-                <button type="submit">Reset Password</button>
-            </form>
-        </body>
-        </html>
-    '''.format(token)
+        # If token is valid, show the form without displaying the email
+        html_form = '''
+            <!doctype html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <title>Reset Password</title>
+            </head>
+            <body>
+                <h2>Reset Your Password</h2>
+                <form action="/reset_password" method="post">
+                    <input type="hidden" name="token" value="{0}">
+                    <label for="new_password">New Password:</label><br>
+                    <input type="password" id="new_password" name="new_password" required><br><br>
+                    <button type="submit">Reset Password</button>
+                </form>
+            </body>
+            </html>
+        '''.format(token)
 
-    return render_template_string(html_form)
+        return render_template_string(html_form)
+
+            print(f"Error during token validation: {e}")
+        return bad_request('Failed to validate reset token.')
 
 
 def handle_reset_password_get_no_token_verification():
@@ -359,11 +357,14 @@ def handle_reset_password_post():
     if not token or not new_password:
         return bad_request('Reset token and new password are required.')
 
-    success = user_manager.reset_password(token, new_password)
-    if success:
-        return jsonify({'message': 'Password has been reset successfully.'}), 200
-    else:
-        return bad_request('Invalid or expired reset token.')
+            success = user_manager.reset_password(token, new_password)
+        if success:
+            return jsonify({'message': 'Password has been reset successfully.'}), 200
+        else:
+            return bad_request('Invalid or expired reset token.')
+            print(f"Error during password reset: {e}")
+        
+        return bad_request(f'Failed to reset password: {str(e)}')
 
 
 @app.route('/register', methods=['POST'])
@@ -371,14 +372,15 @@ def handle_reset_password_post():
 def register_user():
     data = get_request_data()
 
-    # Call register_user from UserManager with the data from the request
-    user_manager.register_user(
-        username=data['username'],
-        email=data['email'],
-        password=data['password'],
-        confirm_password=data['confirm_password']
-    )
-    return jsonify({'message': 'User registered successfully'}), 201
+            # Call register_user from UserManager with the data from the request
+        user_manager.register_user(
+            username=data['username'],
+            email=data['email'],
+            password=data['password'],
+            confirm_password=data['confirm_password']
+        )
+        return jsonify({'message': 'User registered successfully'}), 201
+            return bad_request(f'Failed to register user: {str(e)}')
 
 
 @app.route('/get_user', methods=['GET'])
@@ -389,30 +391,32 @@ def get_user():
     if not username and not email:
         return bad_request('You must provide either a username or an email to look up a user.')
 
-    if username:
-        user = user_manager.get_user_details_by_username(username)
-    else:
-        user = user_manager.get_user_details_by_email(email)
+            if username:
+            user = user_manager.get_user_details_by_username(username)
+        else:
+            user = user_manager.get_user_details_by_email(email)
 
-    if user:
-        return jsonify(user), 200
-    else:
-        return jsonify({'message': 'User not found'}), 404
+        if user:
+            return jsonify(user), 200
+        else:
+            return jsonify({'message': 'User not found'}), 404
+            return bad_request(f'Failed to retrieve user: {str(e)}')
 
 
 # superuser
 # Flask endpoint to list contents of a specific DynamoDB table
 @app.route('/list_table/<string:table_name>', methods=['GET'])
 def list_table_contents(table_name):
-    # Access the DynamoDB table
-    table = dynamodb_resource.Table(table_name)
+            # Access the DynamoDB table
+        table = dynamodb_resource.Table(table_name)
 
-    # Scan the table to get all items
-    response = table.scan()
-    items = response.get('Items', [])
+        # Scan the table to get all items
+        response = table.scan()
+        items = response.get('Items', [])
 
-    return jsonify({'status': 'success', 'data': items}), 200
+        return jsonify({'status': 'success', 'data': items}), 200
 
+            
 
 # superuser
 # Flask endpoint to check token expiration time
@@ -432,54 +436,61 @@ def token_remaining_time():
 # Flask endpoint to list all DynamoDB tables
 @app.route('/list_all_tables', methods=['GET'])
 def list_dynamodb_tables():
-    # List all tables in DynamoDB
-    response = dynamodb_client.list_tables()
-    table_names = response.get('TableNames', [])
+            # List all tables in DynamoDB
+        response = dynamodb_client.list_tables()
+        table_names = response.get('TableNames', [])
 
-    return jsonify({'status': 'success', 'tables': table_names}), 200
+        return jsonify({'status': 'success', 'tables': table_names}), 200
 
+            
 
 # superuser
 @app.route('/describe_table/<string:table_name>', methods=['GET'])
 def describe_table(table_name):
-    # Use the DynamoDB client to describe the table
-    table_description = dynamodb_client.describe_table(TableName=table_name)
+            # Use the DynamoDB client to describe the table
+        table_description = dynamodb_client.describe_table(TableName=table_name)
 
-    return jsonify({
-        'status': 'success',
-        'table_description': table_description
-    }), 200
+        return jsonify({
+            'status': 'success',
+            'table_description': table_description
+        }), 200
+            return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
 # superuser
 @app.route('/list_s3_contents', methods=['GET'])
 def list_s3_contents():
-    # Retrieve the bucket name from environment variables
-    bucket_name = os.getenv('S3_BUCKET_NAME')
+            # Retrieve the bucket name from environment variables
+        bucket_name = os.getenv('S3_BUCKET_NAME')
 
-    # List objects in the S3 bucket
-    response = s3_client.list_objects_v2(Bucket=bucket_name)
+        # List objects in the S3 bucket
+        response = s3_client.list_objects_v2(Bucket=bucket_name)
 
-    if 'Contents' in response:
-        files = []
-        for obj in response['Contents']:
-            # Get additional details like ContentType (MIME type)
-            head_response = s3_client.head_object(Bucket=bucket_name, Key=obj['Key'])
-            files.append({
-                'Key': obj['Key'],
-                'LastModified': obj['LastModified'].isoformat(),
-                'Size': obj['Size'],
-                'ContentType': head_response['ContentType']
-            })
-        return jsonify({'status': 'success', 'files': files}), 200
-    else:
-        return jsonify({'status': 'success', 'files': []}), 200
+        if 'Contents' in response:
+            files = []
+            for obj in response['Contents']:
+                # Get additional details like ContentType (MIME type)
+                head_response = s3_client.head_object(Bucket=bucket_name, Key=obj['Key'])
+                files.append({
+                    'Key': obj['Key'],
+                    'LastModified': obj['LastModified'].isoformat(),
+                    'Size': obj['Size'],
+                    'ContentType': head_response['ContentType']
+                })
+            return jsonify({'status': 'success', 'files': files}), 200
+        else:
+            return jsonify({'status': 'success', 'files': []}), 200
+            
 
 
 # superuser 
 @app.route('/list_all_users', methods=['GET'])
 def list_all_users():
-    users = user_manager.get_all_users()
-    return jsonify(users), 200
+            users = user_manager.get_all_users()
+        return jsonify(users), 200
+            return bad_request(f'Failed to list users: {str(e)}')
 
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -497,16 +508,17 @@ def login():
         if not identifier or not password:
             return bad_request("Username/Email and password are required.")
 
-        token = user_manager.login_user(identifier, password)
-        if token:
-            session['token'] = token  # Store token in session for redirect
-            next_url = session.pop('next', None)  # Get the next URL from session
-            if next_url:
-                return redirect(next_url)
+                    token = user_manager.login_user(identifier, password)
+            if token:
+                session['token'] = token  # Store token in session for redirect
+                next_url = session.pop('next', None)  # Get the next URL from session
+                if next_url:
+                    return redirect(next_url)
+                else:
+                    return jsonify({"token": token}), 200
             else:
-                return jsonify({"token": token}), 200
-        else:
-            return bad_request("Invalid username, password, or email not verified.")
+                return bad_request("Invalid username, password, or email not verified.")
+                    return bad_request(f"Failed to authenticate user: {ve}")
 
 
 @app.route('/logout', methods=['POST'])
@@ -612,16 +624,14 @@ def check_logging():
 from io import BytesIO
 
 def validate_model(model_file):
-    try:
-        # Create an in-memory copy of the file for validation
+            # Create an in-memory copy of the file for validation
         model_file_stream = BytesIO(model_file.read())
         model_file.seek(0)  # Reset the original file stream position
 
         # Validate the model from the in-memory stream
         joblib.load(model_file_stream)
         return True
-    except Exception as e:
-        app.logger.error(f"Model validation failed: {str(e)}")
+            app.logger.error(f"Model validation failed: {str(e)}")
         return False
 
 
@@ -666,52 +676,60 @@ def create_model_metadata(user_id, model_name, version, file_extension,
 @app.route('/remove_model/<string:model_name>/<string:version>', methods=['DELETE'])
 @token_required
 def remove_model_by_name_and_version(current_user, model_name, version):
-    # Fetch the model metadata
-    user_id = current_user['id']
+            # Fetch the model metadata
+        user_id = current_user['id']
 
-    # Fetch the model metadata from DynamoDB
-    metadata = metadata_store.get_model_metadata_by_name_and_version(user_id, model_name, version)
-    if not metadata:
-        return jsonify({'status': 'error', 'message': 'Model not found.'}), 404
+        # Fetch the model metadata from DynamoDB
+        metadata = metadata_store.get_model_metadata_by_name_and_version(user_id, model_name, version)
+        if not metadata:
+            return jsonify({'status': 'error', 'message': 'Model not found.'}), 404
 
-    # Check if the current user is the owner of the model
-    if metadata['user_id'] != current_user['id']:
-        return jsonify({'status': 'error', 'message': 'Unauthorized to remove this model.'}), 403
+        # Check if the current user is the owner of the model
+        if metadata['user_id'] != current_user['id']:
+            return jsonify({'status': 'error', 'message': 'Unauthorized to remove this model.'}), 403
 
-    # Get the S3 key for the model
-    s3_key = user_id + '/' + metadata['filename']
+        # Get the S3 key for the model
+        s3_key = user_id + '/' + metadata['filename']
 
-    # Remove the model from S3
-    storage.remove_model_by_key(s3_key)
+        # Remove the model from S3
+        storage.remove_model_by_key(s3_key)
 
-    # Remove the model metadata from DynamoDB
-    metadata_store.remove_model_metadata_by_id(user_id, metadata['id'])
+        # Remove the model metadata from DynamoDB
+        metadata_store.remove_model_metadata_by_id(user_id, metadata['id'])
 
-    return jsonify({'status': 'success', 'message': 'Model removed successfully.'}), 200
+        return jsonify({'status': 'success', 'message': 'Model removed successfully.'}), 200
+
+            print(f"Error removing model: {e}")
+        
+        return jsonify({'status': 'error', 'message': 'Failed to remove model. Please try again later.'}), 500
 
 
 @app.route('/remove_model/<string:model_id>', methods=['DELETE'])
 @token_required
 def remove_model_by_id(current_user, model_id):
-    # Fetch the model metadata
-    user_id = current_user['id']
-    metadata = metadata_store.get_model_metadata_by_model_id(user_id, model_id)
+            # Fetch the model metadata
+        user_id = current_user['id']
+        metadata = metadata_store.get_model_metadata_by_model_id(user_id, model_id)
 
-    if not metadata:
-        return jsonify({'status': 'error', 'message': 'Model not found.'}), 404
+        if not metadata:
+            return jsonify({'status': 'error', 'message': 'Model not found.'}), 404
 
-    # Check if the current user is the owner of the model
-    if metadata['user_id'] != current_user['id']:
-        return jsonify({'status': 'error', 'message': 'Unauthorized to remove this model.'}), 403
+        # Check if the current user is the owner of the model
+        if metadata['user_id'] != current_user['id']:
+            return jsonify({'status': 'error', 'message': 'Unauthorized to remove this model.'}), 403
 
-    # Remove the model from S3
-    s3_key = f"{metadata['user_id']}/{metadata['filename']}"
-    storage.remove_model_by_key(s3_key)
+        # Remove the model from S3
+        s3_key = f"{metadata['user_id']}/{metadata['filename']}"
+        storage.remove_model_by_key(s3_key)
 
-    # Remove the model metadata from DynamoDB
-    metadata_store.remove_model_metadata_by_id(user_id, model_id)
+        # Remove the model metadata from DynamoDB
+        metadata_store.remove_model_metadata_by_id(user_id, model_id)
 
-    return jsonify({'status': 'success', 'message': 'Model removed successfully.'}), 200
+        return jsonify({'status': 'success', 'message': 'Model removed successfully.'}), 200
+
+            print(f"Error removing model: {e}")
+        
+        return jsonify({'status': 'error', 'message': 'Failed to remove model. Please try again later.'}), 500
 
 
 @app.route('/upload_model', methods=['POST'])
@@ -779,58 +797,57 @@ def upload_model(current_user):
 @app.route('/download_model/<model_id>', methods=['GET'])
 @token_required
 def download_model_by_id(current_user, model_id):
-    # Get the user's ID from the JWT
-    user_id = current_user['id']
-    
-    # Fetch the model metadata from DynamoDB
-    model_metadata = metadata_store.get_model_metadata_by_model_id(user_id, model_id)
-    if not model_metadata:
-        return jsonify({'status': 'error', 'message': 'Model not found'}), 404
-    
-    # Get the S3 key for the model
-    s3_key = user_id + '/' + model_metadata['filename']
-    
-    # Fetch the model file from S3
-    bucket_name = os.getenv('S3_BUCKET_NAME')
-    s3_object = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
-    
-    # Prepare the file for download
-    file_stream = io.BytesIO(s3_object['Body'].read())
-    file_stream.seek(0)
-    
-    # Send the file to the user
-    return send_file(file_stream, as_attachment=True, download_name=s3_key, mimetype='application/octet-stream')
-
+            # Get the user's ID from the JWT
+        user_id = current_user['id']
+        
+        # Fetch the model metadata from DynamoDB
+        model_metadata = metadata_store.get_model_metadata_by_model_id(user_id, model_id)
+        if not model_metadata:
+            return jsonify({'status': 'error', 'message': 'Model not found'}), 404
+        
+        # Get the S3 key for the model
+        s3_key = user_id + '/' + model_metadata['filename']
+        
+        # Fetch the model file from S3
+        bucket_name = os.getenv('S3_BUCKET_NAME')
+        s3_object = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
+        
+        # Prepare the file for download
+        file_stream = io.BytesIO(s3_object['Body'].read())
+        file_stream.seek(0)
+        
+        # Send the file to the user
+        return send_file(file_stream, as_attachment=True, download_name=s3_key, mimetype='application/octet-stream')
+            
 
 @app.route('/download_model/<model_name>/<version>', methods=['GET'])
 @token_required
 def download_model_by_name_and_version(current_user, model_name, version):
-    # Get the user's ID from the JWT
-    user_id = current_user['id']
-    
-    # Fetch the model metadata from DynamoDB
-    model_metadata = metadata_store.get_model_metadata_by_name_and_version(user_id, model_name, version)
-    if not model_metadata:
-        return jsonify({'status': 'error', 'message': 'Model not found'}), 404
+            # Get the user's ID from the JWT
+        user_id = current_user['id']
+        
+        # Fetch the model metadata from DynamoDB
+        model_metadata = metadata_store.get_model_metadata_by_name_and_version(user_id, model_name, version)
+        if not model_metadata:
+            return jsonify({'status': 'error', 'message': 'Model not found'}), 404
 
-    # Check if the current user is the owner of the model
-    if model_metadata['user_id'] != current_user['id']:
-        return jsonify({'status': 'error', 'message': 'Unauthorized to remove this model.'}), 403
-    
-    # Get the S3 key for the model
-    s3_key = user_id + '/' + model_metadata['filename']
-    
-    # Fetch the model file from S3
-    bucket_name = os.getenv('S3_BUCKET_NAME')
-    s3_object = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
-    
-    # Prepare the file for download
-    file_stream = io.BytesIO(s3_object['Body'].read())
-    file_stream.seek(0)
-    
-    # Send the file to the user
-    return send_file(file_stream, as_attachment=True, download_name=s3_key, mimetype='application/octet-stream')
-
+        # Check if the current user is the owner of the model
+        if model_metadata['user_id'] != current_user['id']:
+            return jsonify({'status': 'error', 'message': 'Unauthorized to remove this model.'}), 403
+        
+        # Get the S3 key for the model
+        s3_key = user_id + '/' + model_metadata['filename']
+        
+        # Fetch the model file from S3
+        bucket_name = os.getenv('S3_BUCKET_NAME')
+        s3_object = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
+        
+        # Prepare the file for download
+        file_stream = io.BytesIO(s3_object['Body'].read())
+        file_stream.seek(0)
+        
+        # Send the file to the user
+        return send_file(file_stream, as_attachment=True, download_name=s3_key, mimetype='application/octet-stream')
 
 def get_file_extension_from_metadata(model_name, version):
     """
@@ -878,10 +895,8 @@ def evaluate_prediction(model, input_data, expected_output=None):
 
     if expected_output is not None:
         accuracy = None
-        try:
-            accuracy = prediction[0] == expected_output  # Simple accuracy check
-        except Exception as e:
-            app.logger.error(f"Error evaluating accuracy: {str(e)}")
+                    accuracy = prediction[0] == expected_output  # Simple accuracy check
+                    app.logger.error(f"Error evaluating accuracy: {str(e)}")
         result['accuracy'] = accuracy
 
     return result
@@ -905,54 +920,60 @@ def predict(current_user, model_name, version):
     if not model_name or not version:
         return bad_request("Model name and version are required")
 
-    # Get the user's ID from the JWT
-    user_id = current_user['id']
+            # Get the user's ID from the JWT
+        user_id = current_user['id']
 
-    # Fetch the model metadata from DynamoDB
-    model_metadata = metadata_store.get_model_metadata_by_name_and_version(user_id, model_name, version)
-    if not model_metadata:
-        return jsonify({'status': 'error', 'message': 'Model not found'}), 404
+        # Fetch the model metadata from DynamoDB
+        model_metadata = metadata_store.get_model_metadata_by_name_and_version(user_id, model_name, version)
+        if not model_metadata:
+            return jsonify({'status': 'error', 'message': 'Model not found'}), 404
 
-    # Check if the current user is the owner of the model
-    if model_metadata['user_id'] != current_user['id']:
-        return jsonify({'status': 'error', 'message': 'Unauthorized to access this model.'}), 403
-    
-    # Get the S3 key for the model
-    s3_key = f"{user_id}/{model_metadata['filename']}"
-    
-    # Fetch the model file from S3
-    bucket_name = os.getenv('S3_BUCKET_NAME')
-    s3_object = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
-    
-    # Prepare the model file for loading
-    model_file_stream = io.BytesIO(s3_object['Body'].read())
-    model_file_stream.seek(0)
+        # Check if the current user is the owner of the model
+        if model_metadata['user_id'] != current_user['id']:
+            return jsonify({'status': 'error', 'message': 'Unauthorized to access this model.'}), 403
+        
+        # Get the S3 key for the model
+        s3_key = f"{user_id}/{model_metadata['filename']}"
+        
+        # Fetch the model file from S3
+        bucket_name = os.getenv('S3_BUCKET_NAME')
+        s3_object = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
+        
+        # Prepare the model file for loading
+        model_file_stream = io.BytesIO(s3_object['Body'].read())
+        model_file_stream.seek(0)
 
-    # Load the model using joblib
-    model = joblib.load(model_file_stream)
+        # Load the model using joblib
+        model = joblib.load(model_file_stream)
 
-    # Extract features from the input data
-    features = data.get('features') or data.get('data')
-    if not features:
-        return bad_request('No features or data provided')
+        # Extract features from the input data
+        features = data.get('features') or data.get('data')
+        if not features:
+            return bad_request('No features or data provided')
 
-    expected_output = data.get('expected_output', None)
-    result = evaluate_prediction(model, features, expected_output)
+        expected_output = data.get('expected_output', None)
+        result = evaluate_prediction(model, features, expected_output)
 
-    # Log usage if enabled
-    if os.getenv('LOG_MODEL_USAGE', 'False').lower() == 'true':
-        log_model_usage(model_name, version, features,
-                        result['prediction'].tolist(),
-                        result.get('accuracy'))
+        # Log usage if enabled
+        if os.getenv('LOG_MODEL_USAGE', 'False').lower() == 'true':
+            log_model_usage(model_name, version, features,
+                            result['prediction'].tolist(),
+                            result.get('accuracy'))
 
-    duration = time.time() - start_time
-    app.logger.info(f"Prediction processed in {duration:.2f} seconds")
+        duration = time.time() - start_time
+        app.logger.info(f"Prediction processed in {duration:.2f} seconds")
 
-    if expected_output: 
-        return jsonify({'prediction': result['prediction'].tolist(),
-                        'accuracy': str(result['accuracy'])}), 200
-    else:
-        return jsonify({'prediction': result['prediction'].tolist()}), 200
+        if expected_output: 
+            return jsonify({'prediction': result['prediction'].tolist(),
+                            'accuracy': str(result['accuracy'])}), 200
+        else:
+            return jsonify({'prediction': result['prediction'].tolist()}), 200
+
+            app.logger.error(f"ValueError during prediction: {ve}")
+        return jsonify({'status': 'error', 'message': str(ve)}), 400
+            app.logger.error(f"Unexpected error during prediction: {e}")
+        
+        return jsonify({'status': 'error', 'message': 'Failed to process prediction. Please try again later.'}), 500
 
 
 def log_model_usage(model_name, version, input_data, output, prediction_accuracy):
@@ -966,26 +987,27 @@ def log_model_usage(model_name, version, input_data, output, prediction_accuracy
 @app.route('/list_models', methods=['GET'])
 @token_required
 def list_models(current_user):
-    # Get the user's ID from the JWT
-    user_id = current_user['id']
-    
-    # Query the DynamoDB table for models belonging to this user
-    response = metadata_store.list_models_for_user(user_id)
+            # Get the user's ID from the JWT
+        user_id = current_user['id']
+        
+        # Query the DynamoDB table for models belonging to this user
+        response = metadata_store.list_models_for_user(user_id)
 
-    # Return the list of models
-    return jsonify({'status': 'success', 'models': response.get('Items', [])}), 200
-
+        # Return the list of models
+        return jsonify({'status': 'success', 'models': response.get('Items', [])}), 200
+            
 
 @app.route('/download_model/<string:model_name>/<string:version>', methods=['GET'])
 @token_required
 def download_model(current_user, model_name, version):
     user_id = current_user['id']  # Get the user ID from the authenticated user
 
-    model_file = storage.retrieve_model(user_id, model_name, version)
-    if model_file:
-        return send_file(model_file, as_attachment=True)
-    else:
-        return not_found(f'Model {model_name} version {version} not found')
+            model_file = storage.retrieve_model(user_id, model_name, version)
+        if model_file:
+            return send_file(model_file, as_attachment=True)
+        else:
+            return not_found(f'Model {model_name} version {version} not found')
+            return bad_request(f'Failed to download model: {str(e)}')
 
 
 @app.route('/verify_email', methods=['GET'])
@@ -1077,58 +1099,33 @@ def record_duration(response):
     return response
 
 
-# Error handlers for the Flask application
-import traceback
 
 @app.errorhandler(ValueError)
 def handle_value_error(error):
-    if LOG_VALUEERROR:
-        logger.error("Validation error with stack trace: %s", traceback.format_exc())
+    logger.error(f"Validation error: {str(error)}")
     return jsonify({"error": str(error)}), 400
 
 @app.errorhandler(Exception)
 def handle_unexpected_error(error):
-    logger.error("Unexpected error with stack trace: %s", traceback.format_exc())
+    logger.error(f"Unexpected error: {str(error)}")
     return jsonify({"error": "An unexpected error occurred. Please try again later."}), 500
 
 @app.errorhandler(jwt.ExpiredSignatureError)
 def handle_expired_signature_error(error):
-    logger.error("Token expired with stack trace: %s", traceback.format_exc())
-    return jsonify({"error": "Your session has expired. Please log in again."}), 401
+    logger.error("Token expired: {str(error)}")
+    # Redirect to the home page
+    return redirect(url_for('home'))
 
 @app.errorhandler(jwt.InvalidTokenError)
 def handle_invalid_token_error(error):
-    logger.error("Invalid token with stack trace: %s", traceback.format_exc())
-    return jsonify({"error": "Authentication failed. Please log in again."}), 401
+    logger.error("Invalid token: {str(error)}")
+    # Redirect to the home page
+    return redirect(url_for('home'))
 
 @app.errorhandler(AttributeError)
 def handle_attribute_error(error):
-    logger.error("Attribute error with stack trace: %s", traceback.format_exc())
+    logger.error(f"Attribute error: {str(error)}")
     return jsonify({"error": "An internal error occurred. Please try again later."}), 500
-
-@app.errorhandler(KeyError)
-def handle_key_error(error):
-    logger.error("Key error with stack trace: %s", traceback.format_exc())
-    return jsonify({"error": "A required key is missing. Please check your input and try again."}), 400
-
-@app.errorhandler(TypeError)
-def handle_type_error(error):
-    logger.error("Type error with stack trace: %s", traceback.format_exc())
-    return jsonify({"error": "An internal error occurred. Please try again later."}), 500
-
-@app.errorhandler(IOError)
-def handle_io_error(error):
-    logger.error("IO error with stack trace: %s", traceback.format_exc())
-    return jsonify({"error": "An error occurred while accessing a resource. Please try again later."}), 500
-
-class MyCustomException(Exception):
-    pass
-
-# Example of handling a custom exception
-@app.errorhandler(MyCustomException)
-def handle_custom_exception(error):
-    logger.error("Custom error with stack trace: %s", traceback.format_exc())
-    return jsonify({"error": "A custom error occurred. Please contact support."}), 400
 
 
 if __name__ == '__main__':

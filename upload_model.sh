@@ -2,7 +2,7 @@ token="${1}"
 version="${2}"
 curl -X POST http://localhost:5000/upload_model \
 -H "Authorization: Bearer ${token}" \
--F "model_name=random_model" \
+-F "model_name=rand_model" \
 -F "version=${version}" \
 -F "accuracy=0.95" \
 -F "description=Model Version ${version}" \

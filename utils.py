@@ -1,5 +1,7 @@
+import bleach
 import boto3
 import jwt
+import html
 import inspect
 import logging
 import os
@@ -243,3 +245,42 @@ def is_valid_email(email):
     # Regular expression for validating an email
     email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(email_regex, email) is not None
+
+
+
+def sanitize_input(data):
+    """
+    Sanitizes input data to prevent security vulnerabilities.
+    """
+    if isinstance(data, dict):
+        sanitized_data = {}
+        for key, value in data.items():
+            sanitized_key = sanitize_input(key)
+            sanitized_value = sanitize_input(value)
+            sanitized_data[sanitized_key] = sanitized_value
+        return sanitized_data
+    elif isinstance(data, list):
+        return [sanitize_input(item) for item in data]
+    elif isinstance(data, str):
+        # Strip leading/trailing whitespace
+        sanitized_data = data.strip()
+        # Remove null bytes
+        sanitized_data = sanitized_data.replace('\x00', '')
+        # Escape HTML characters
+        sanitized_data = html.escape(sanitized_data)
+        # Escape SQL characters (basic)
+        sanitized_data = re.sub(r"[\'\"\\;]", "", sanitized_data)
+        # Remove dangerous special characters (you can customize this based on your needs)
+        # Currently allows the following:
+        # Alphanumeric characters: a-zA-Z0-9
+        # Underscores: _
+        # Hyphens: -
+        # Spaces: \s
+        # At symbol: @
+        # Periods: .
+        sanitized_data = re.sub(r"[^a-zA-Z0-9_\-\s@.]", "", sanitized_data)
+        # Optional: Use bleach to allow only certain HTML tags if necessary
+        # sanitized_data = bleach.clean(sanitized_data, tags=[], attributes={}, strip=True)
+        return sanitized_data
+    else:
+        return data

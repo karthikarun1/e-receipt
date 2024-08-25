@@ -65,7 +65,81 @@ class UserManager:
         )
         return len(response.get('Items', [])) > 0
 
-    def resend_verification_email(self, email):
+    def resend_verification_email(self, identifier):
+        """Resend the email verification link, creating a new entry if none exists."""
+        try:
+            # First, try to find the user by username
+            response = self.users_table.query(
+                IndexName='username-index',
+                KeyConditionExpression=Key('username').eq(identifier)
+            )
+            user = response.get('Items', [])
+
+            if not user:  # If no user found by username, try by email
+                response = self.users_table.query(
+                    IndexName='email-index',
+                    KeyConditionExpression=Key('email').eq(identifier)
+                )
+                user = response.get('Items', [])
+
+            #if not user:
+            #    raise ValueError("User not found.")
+            if not user:
+                # If the user is not found, return early (no email to resend)
+                return
+
+            user = user[0]  # Get the first (and only) result
+            email = user['email']
+
+            # Query using the GSI to find the item by email
+            response = self.verification_table.query(
+                IndexName='email-index',
+                KeyConditionExpression=Key('email').eq(email)
+            )
+            items = response.get('Items', [])
+            
+            if not items:
+                # If no verification entry exists, create a new one
+                verification_code = str(uuid.uuid4())
+                expires_at = int(time.time()) + 3600  # New code valid for 1 hour
+
+                self.verification_table.put_item(
+                    Item={
+                        'email': email,
+                        'verification_code': verification_code,
+                        'expires_at': expires_at
+                    }
+                )
+            else:
+                # If an entry exists, check its expiration
+                item = items[0]
+                current_time = int(time.time())
+                if current_time > item['expires_at']:
+                    # Code has expired, generate a new one
+                    verification_code = str(uuid.uuid4())
+                    expires_at = current_time + 3600  # New code valid for 1 hour
+
+                    # Update the table with the new code and expiration time
+                    self.verification_table.put_item(
+                        Item={
+                            'email': email,
+                            'verification_code': verification_code,
+                            'expires_at': expires_at
+                        }
+                    )
+                else:
+                    # Code is still valid
+                    verification_code = item['verification_code']
+
+            # Resend the verification email
+            self._send_verification_email(email, verification_code)
+
+        except Exception as e:
+            print(f"Error resending verification email: {e}")
+            traceback.print_exc()
+            raise  # Let the calling function handle the HTTP response
+
+    def resend_verification_email_old(self, email):
         """Resend the email verification link, creating a new entry if none exists."""
         try:
             # Query using the GSI to find the item by email
@@ -93,7 +167,7 @@ class UserManager:
                 current_time = int(time.time())
                 if current_time > item['expires_at']:
                     # Code has expired, generate a new one
-                    verification_code = self._generate_verification_code()
+                    verification_code = str(uuid.uuid4())
                     expires_at = current_time + 3600  # New code valid for 1 hour
 
                     # Update the table with the new code and expiration time
@@ -130,7 +204,51 @@ class UserManager:
         body = f"Please reset your password by clicking on the following link: {link}"
         self.email_util.send_email(email, subject, body)
 
-    def request_password_reset(self, email):
+    def request_password_reset(self, identifier):
+        """Request a password reset by sending a reset token to the user's email."""
+        try:
+            # Try to find the user by username
+            response = self.users_table.query(
+                IndexName='username-index',
+                KeyConditionExpression=Key('username').eq(identifier)
+            )
+            user = response.get('Items', [])
+
+            if not user:  # If no user found by username, try by email
+                response = self.users_table.query(
+                    IndexName='email-index',
+                    KeyConditionExpression=Key('email').eq(identifier)
+                )
+                user = response.get('Items', [])
+
+            if not user:
+                raise ValueError("User not found.")
+
+            user = user[0]  # Get the first (and only) result
+            reset_token = str(uuid.uuid4())  # Generate a unique reset token
+
+            # Store the reset token with expiration
+            self.reset_tokens_table.put_item(
+                Item={
+                    'email': user['email'],
+                    'token': reset_token,
+                    'expires_at': int(time.time()) + int(PASSWORD_RESET_TOKEN_VALIDITY_SECONDS)
+                }
+            )
+
+            # Send reset email
+            self._send_reset_email(user['email'], reset_token)
+
+        except ClientError as e:
+            print(f"Error requesting password reset: {e}")
+            traceback.print_exc()
+            raise
+        except Exception as e:
+            print(f"An unexpected error occurred: {str(e)}")
+            traceback.print_exc()
+            raise
+
+    def request_password_reset_old(self, email):
         """Request a password reset by sending a reset token to the user's email."""
         print(f"-----------Attempting to request password reset for email: {email}")
         try:
@@ -154,7 +272,7 @@ class UserManager:
                 Item={
                     'email': email,
                     'token': reset_token,
-                    'expires_at': int(time.time()) + PASSWORD_RESET_TOKEN_VALIDITY_SECONDS
+                    'expires_at': int(time.time()) + int(PASSWORD_RESET_TOKEN_VALIDITY_SECONDS)
                 }
             )
 
@@ -197,7 +315,6 @@ class UserManager:
             )
             user_items = user_response.get('Items', [])
             if not user_items:
-                print("User not found.")
                 return False
 
             user = user_items[0]
@@ -474,13 +591,13 @@ class UserManager:
                 user = response.get('Items', [])
 
             if not user:
-                raise ValueError("User not found.")
+                raise ValueError("Invalid username or email or password.")
 
             user = user[0]  # Get the first (and only) result
 
             hashed_password = user['password']
             if not self._check_password(password, hashed_password):
-                raise ValueError("Invalid password.")
+                raise ValueError("Invalid username or email or password.")
 
             if not user.get('verified', False):
                 raise ValueError("Email not verified. Please verify your email before logging in.")

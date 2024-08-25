@@ -1,0 +1,9 @@
+- Limit number of characters in model description
+- Limit model size
+    - one size for free tier
+    - one size for subscription tier
+- If user goes to login or register page, but already logged in then redirect them to home page
+- Limit rate flow of incoming data (be it model upload or other activity) to prevent DDOS attacks
+- Sanitize all input data
+- Ability for user to change email
+- Ability to update model description

@@ -1,8 +1,9 @@
 import os
 import re
-from dotenv import load_dotenv
 
-load_dotenv()
+# Load environment variables
+from config_loader import load_environment
+load_environment()
 
 # Load limits from .env file
 MAX_DESCRIPTION_LENGTH = int(os.getenv('MAX_DESCRIPTION_LENGTH', 500))

@@ -17,26 +17,29 @@ import utils
 
 # System defined
 from datetime import datetime
-from dotenv import load_dotenv
 from flask import Flask, redirect, request, jsonify, render_template_string, send_file, session, url_for
 from flasgger import Swagger
 from input_validator import InputValidator
-from prometheus_client import CollectorRegistry, Gauge, generate_latest, Summary
+from prometheus_client import CollectorRegistry, Gauge, generate_latest, Summary, REGISTRY
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 
-from user_management import UserManager
-
-
 # User defined
+from superuser_management import register_superuser_command
+from user_management import UserManager
+from org_management import OrganizationManager
+from subscription_management import SubscriptionManager
 from storage import MlModelStorage
 from metadata_store import MetadataStore
 
+# load environment variables
+from config_loader import load_environment
+load_environment()
 
 app = Flask(__name__)
 
-
-load_dotenv()
+# Register the superuser CLI command
+register_superuser_command(app)
 
 JWT_SECRET = os.getenv('JWT_SECRET')
 app.secret_key = JWT_SECRET  # needed for sessions to work
@@ -46,14 +49,19 @@ table_prefix = os.getenv('TABLE_PREFIX')
 dynamodb_resource = dynamodb_utils.get_dynamodb_resource()
 dynamodb_client = dynamodb_utils.get_dynamodb_client()
 s3_client = s3_utils.get_client()
-user_manager = UserManager(dynamodb_resource, table_prefix)
 metadata_table_name = f'{table_prefix}_' + os.getenv('METADATA_TABLE')
 metadata_store = MetadataStore(table_name=metadata_table_name)
 storage = MlModelStorage(metadata_store=metadata_store)
 
+user_manager = UserManager(dynamodb_resource, table_prefix)
+org_manager = OrganizationManager(dynamodb_resource, table_prefix)
+
 # Create a prometheus metric
 registry = CollectorRegistry()
 g = Gauge('example_metric', 'Example metric for demonstration', registry=registry)
+# Clear the registry (useful in development environments)
+for collector in list(REGISTRY._collector_to_names.keys()):
+    REGISTRY.unregister(collector)
 REQUEST_DURATION = Summary('http_request_duration_seconds', 'Duration of HTTP requests in seconds')
 
 # For API documentation.
@@ -201,12 +209,37 @@ def token_required(f):
     return decorated
 
 
+def superuser_required(f):
+    @token_required
+    @functools.wraps(f)
+    def decorated(user, *args, **kwargs):
+        if not user.get('superuser', False):
+            return jsonify({'message': 'You do not have permission to access this resource.'}), 403
+        return f(user, *args, **kwargs)
+
+    return decorated
+
+
 # Example protected route
 @app.route('/protected_resource', methods=['GET'])
 @token_required
 def protected_resource(user):
     # This resource is protected and only accessible with a valid token and registered user
     return jsonify({'message': f'Welcome, {user["username"]}! This is a protected resource.'})
+
+
+@app.route('/create_organization', methods=['POST'])
+@token_required
+def create_organization(current_user):
+    data = request.json
+    org_name = data.get('org_name')
+    creator_user_id = current_user['id']  # Use the authenticated user's ID
+
+    if not org_name:
+        raise ValueError("Organization name must be provided.")
+
+    org_id = org_manager.create_organization(org_name, creator_user_id)
+    return jsonify({"message": "Organization created successfully", "org_id": org_id}), 201
 
 
 @app.route('/change_password', methods=['POST'])
@@ -378,7 +411,12 @@ def register_user():
         password=data['password'],
         confirm_password=data['confirm_password']
     )
-    return jsonify({'message': 'User registered successfully'}), 201
+    return jsonify({
+        'message': ('User registered successfully! Please verify your email '
+                    'before you can log in. An email has been sent with a '
+                    'link that you need to click on to complete the '
+                    'verification. Thank you!')
+}), 201
 
 
 @app.route('/get_user', methods=['GET'])
@@ -403,7 +441,8 @@ def get_user():
 # superuser
 # Flask endpoint to list contents of a specific DynamoDB table
 @app.route('/list_table/<string:table_name>', methods=['GET'])
-def list_table_contents(table_name):
+@superuser_required
+def list_table_contents(user, table_name):
     # Access the DynamoDB table
     table = dynamodb_resource.Table(table_name)
 
@@ -417,7 +456,8 @@ def list_table_contents(table_name):
 # superuser
 # Flask endpoint to check token expiration time
 @app.route('/token_remaining_time', methods=['POST'])
-def token_remaining_time():
+@superuser_required
+def token_remaining_time(user):
     data = get_request_data()
     token = data.get("token")
 
@@ -431,7 +471,8 @@ def token_remaining_time():
 # superuser
 # Flask endpoint to list all DynamoDB tables
 @app.route('/list_all_tables', methods=['GET'])
-def list_dynamodb_tables():
+@superuser_required
+def list_dynamodb_tables(user):
     # List all tables in DynamoDB
     response = dynamodb_client.list_tables()
     table_names = response.get('TableNames', [])
@@ -441,7 +482,8 @@ def list_dynamodb_tables():
 
 # superuser
 @app.route('/describe_table/<string:table_name>', methods=['GET'])
-def describe_table(table_name):
+@superuser_required
+def describe_table(user, table_name):
     # Use the DynamoDB client to describe the table
     table_description = dynamodb_client.describe_table(TableName=table_name)
 
@@ -452,7 +494,8 @@ def describe_table(table_name):
 
 # superuser
 @app.route('/list_s3_contents', methods=['GET'])
-def list_s3_contents():
+@superuser_required
+def list_s3_contents(user):
     # Retrieve the bucket name from environment variables
     bucket_name = os.getenv('S3_BUCKET_NAME')
 
@@ -477,9 +520,18 @@ def list_s3_contents():
 
 # superuser 
 @app.route('/list_all_users', methods=['GET'])
-def list_all_users():
+@superuser_required
+def list_all_users(user):
     users = user_manager.get_all_users()
     return jsonify(users), 200
+
+
+# superuser 
+@app.route('/list_user/<string:username>', methods=['GET'])
+@superuser_required
+def list_user(user, username):
+    user = user_manager.get_user_details(username)
+    return jsonify(user), 200
 
 
 @app.route('/login', methods=['GET', 'POST'])

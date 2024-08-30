@@ -1,5 +1,10 @@
+import logging
+
+from base_management import BaseManager
 from botocore.exceptions import ClientError
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 
 class Permission(Enum):
@@ -20,11 +25,9 @@ class Permission(Enum):
     REMOVE_ORGANIZATION_ADMIN = 'remove_organization_admin'
 
 
-class PermissionsManager:
+class PermissionsManager(BaseManager):
     def __init__(self, dynamodb, table_prefix):
-        self.permissions_table = dynamodb.Table(f'{table_prefix}_Permissions')
-        self.groups_table = dynamodb.Table(f'{table_prefix}_Groups')
-        self.user_table = dynamodb.Table(f'{table_prefix}_Users')
+        super().__init__(dynamodb, table_prefix)
 
     def _convert_permissions_to_strings(self, permissions):
         """Convert list of Permission enums to strings."""
@@ -45,7 +48,7 @@ class PermissionsManager:
         try:
             permissions = self._convert_permissions_to_strings(permissions)
             response = self.permissions_table.update_item(
-                Key={'user_id': user_id},
+                Key={'id': user_id},
                 UpdateExpression="SET #perm = list_append(if_not_exists(#perm, :empty_list), :permissions)",
                 ExpressionAttributeNames={
                     '#perm': 'permissions'
@@ -58,7 +61,7 @@ class PermissionsManager:
             )
             return response
         except ClientError as e:
-            print(f"Error adding user permissions: {e}")
+            logger.error(f"Error adding user permissions: {e}")
             raise
 
     def remove_user_permissions(self, user_id, permissions):
@@ -221,7 +224,8 @@ class PermissionsManager:
             admin_permissions = [permission for permission in Permission]
             self.add_user_permissions(admin_user_id, admin_permissions)
         except Exception as e:
-            print(f"Error initializing admin permissions: {e}")
+            logger.error(f"Error initializing admin permissions: {e}")
+            raise
 
 # Example usage:
 if __name__ == "__main__":

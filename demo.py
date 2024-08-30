@@ -2,7 +2,6 @@ import os
 import boto3
 import utils
 import dynamodb_utils
-from dotenv import load_dotenv
 from botocore.exceptions import NoCredentialsError, PartialCredentialsError
 from org_management import OrganizationManager
 from permissions_management import PermissionsManager, Permission
@@ -10,8 +9,9 @@ from subscription_management import SubscriptionManager
 from user_management import UserManager
 from email_util import EmailUtil
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables
+from config_loader import load_environment
+load_environment()
 
 TABLE_PREFIX = os.getenv('TABLE_PREFIX')
 

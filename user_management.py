@@ -9,36 +9,25 @@ import traceback
 import traceback
 import utils
 
+from base_management import BaseManager
 from botocore.exceptions import ClientError, NoCredentialsError, PartialCredentialsError
 from permissions_management import PermissionsManager, Permission
 from boto3.dynamodb.conditions import Key  # Add this import statement
 from datetime import datetime, timedelta
 from email_util import EmailUtil
-from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables
+from config_loader import load_environment
+load_environment()
 
 PASSWORD_RESET_TOKEN_VALIDITY_SECONDS = os.getenv('PASSWORD_RESET_TOKEN_VALIDITY_SECONDS')
 LOGIN_VALIDITY_SECONDS = os.getenv('LOGIN_VALIDITY_SECONDS')
 
 
-class UserManager:
+class UserManager(BaseManager):
     def __init__(self, dynamodb, table_prefix):
-
-        self.dynamodb = dynamodb
-        self.email_util = EmailUtil()  # Initialize EmailUtil
-
-        self.username_index = 'username-index'
-        self.email_index = 'email-index'
+        super().__init__(dynamodb, table_prefix)
         self.permissions_manager = PermissionsManager(dynamodb, table_prefix)
-
-        self.users_table = dynamodb.Table(f'{table_prefix}_Users')
-        self.groups_table = dynamodb.Table(f'{table_prefix}_Groups')
-        self.user_group_membership_table = dynamodb.Table(f'{table_prefix}_UserGroupMembership')
-        self.verification_table = dynamodb.Table(f'{table_prefix}_EmailVerification')
-        self.reset_tokens_table = dynamodb.Table(f'{table_prefix}_ResetTokens')
-        self.revoked_tokens_table = dynamodb.Table(f'{table_prefix}_RevokedTokens')
         self.jwt_secret = os.getenv('JWT_SECRET')
 
     def _hash_password(self, password):
@@ -52,7 +41,7 @@ class UserManager:
     def _username_exists(self, username):
         """Check if a username already exists."""
         response = self.users_table.query(
-            IndexName=self.username_index,
+            IndexName='username-index',
             KeyConditionExpression=Key('username').eq(username)
         )
         return len(response.get('Items', [])) > 0
@@ -60,7 +49,7 @@ class UserManager:
     def _email_exists(self, email):
         """Check if an email already exists."""
         response = self.users_table.query(
-            IndexName=self.email_index,
+            IndexName='email-index',
             KeyConditionExpression=Key('email').eq(email)
         )
         return len(response.get('Items', [])) > 0
@@ -729,6 +718,62 @@ class UserManager:
         except ClientError as e:
             print(f"Error removing user from group: {e}")
             return "Error removing user from group"
+
+    def is_user_in_group(self, user_id, group_id):
+        try:
+            response = self.user_group_membership_table.get_item(
+                Key={'user_id': user_id, 'group_id': group_id}
+            )
+            return 'Item' in response
+        except ClientError as e:
+            print(f"Error checking group membership: {e}")
+            return False
+
+    def delete_group(self, executor_user_id, group_id):
+        # Check if the executor has the permission to delete the group
+        if not self.permissions_manager.check_permission(executor_user_id, Permission.MANAGE_PERMISSIONS):
+            return "Unauthorized: You don't have permission to delete groups."
+    
+        # Retrieve the group details
+        group = self.groups_table.get_item(Key={'id': group_id}).get('Item')
+        if not group:
+            return "Group not found."
+    
+        # Remove all users from the group
+        try:
+            response = self.user_group_membership_table.query(
+                IndexName='group_id-index',
+                KeyConditionExpression=Key('group_id').eq(group_id)
+            )
+            for item in response.get('Items', []):
+                self.user_group_membership_table.delete_item(
+                    Key={'user_id': item['user_id'], 'group_id': group_id}
+                )
+        except ClientError as e:
+            print(f"Error removing users from group: {e}")
+            return "Error during user removal"
+    
+        # Remove group permissions
+        try:
+            self.permissions_manager.remove_group_permissions(group_id, group.get('permissions', []))
+        except ClientError as e:
+            print(f"Error removing group permissions: {e}")
+            return "Error during permissions removal"
+    
+        # Remove the group from the organization
+        try:
+            self.org_management.remove_group_from_organization(group['org_id'], group_id)
+        except ClientError as e:
+            print(f"Error removing group from organization: {e}")
+            return "Error during organization update"
+    
+        # Finally, delete the group itself
+        try:
+            self.groups_table.delete_item(Key={'id': group_id})
+            return "Group deleted successfully"
+        except ClientError as e:
+            print(f"Error deleting group: {e}")
+            return "Error during group deletion"
 
     def check_model_permission(self, user_id, permission):
         """Check if the user can perform a given model operation considering both user and group permissions."""

@@ -3,10 +3,12 @@ import os
 import traceback
 from botocore.exceptions import NoCredentialsError, PartialCredentialsError, ClientError
 from boto3.dynamodb.conditions import Key
-from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+
+# Load environment variables
+from config_loader import load_environment
+load_environment()
+
 
 def get_dynamodb_resource(region_name='us-west-2'):
     # Initialize the DynamoDB resource
@@ -427,5 +429,7 @@ if __name__ == "__main__":
     dynamodb_resource = boto3.resource('dynamodb', endpoint_url='http://localhost:8000', region_name='us-east-1')
     dynamodb_client = boto3.client('dynamodb', endpoint_url='http://localhost:8000', region_name='us-east-1')
 
-    drop_all_tables(dynamodb_client)
-    create_all_tables(dynamodb_resource, table_prefix)
+    are_you_sure = input('Are you sure you want to drop and recreate all tables? (y/n):')
+    if are_you_sure.lower() in ('y', 'yes'):
+        drop_all_tables(dynamodb_client)
+        create_all_tables(dynamodb_resource, table_prefix)

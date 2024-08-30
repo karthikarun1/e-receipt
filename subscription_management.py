@@ -1,24 +1,59 @@
 import boto3
+import logging
 import os
+
 from botocore.exceptions import ClientError
 from uuid import uuid4
 from datetime import datetime, timedelta
 import smtplib
-from dotenv import load_dotenv
+
+from base_management import BaseManager
+from enum import Enum
+from email_util import EmailUtil
+
+# Load environment variables
+from config_loader import load_environment
+load_environment()
+
+
+class SubscriptionPlanType(Enum):
+    FREE = "free"
+    PAID = "paid"
 
 
 class UserNotFoundException(Exception):
     pass
 
 
-class SubscriptionManager:
-    def __init__(self, dynamodb, email_util, table_prefix):
-        load_dotenv()  # Load environment variables from .env file
-        self.dynamodb = dynamodb
-        self.subscriptions_table_name = f'{table_prefix}_Subscriptions'
-        self.users_table_name = f'{table_prefix}_Users'
-        self._initialize_tables()
-        self.email_util=email_util
+class SubscriptionManager(BaseManager):
+    def __init__(self, dynamodb, table_prefix):
+        super().__init__(dynamodb, table_prefix)
+
+    def get_user_subscription(self, user_id):
+        """Retrieve the subscription details for a given user."""
+        try:
+            table = self.dynamodb.Table(self.subscription_table_name)
+            response = table.get_item(Key={'user_id': user_id})
+            subscription = response.get('Item')
+            
+            if not subscription:
+                # If no subscription is found, return a default free plan
+                return {
+                    'user_id': user_id,
+                    'plan_type': 'free',
+                    'status': 'active'
+                }
+            return subscription
+        except Exception as e:
+            logging.error(f"Error retrieving subscription for user {user_id}: {e}")
+            raise
+
+    def get_user_plan_type(self, user_id):
+        """Automatically detect the plan type for the given user."""
+        subscription = self.get_user_subscription(user_id)
+        # Default to 'free' if no subscription found
+        plan_type_str = subscription.get('plan_type', SubscriptionPlanType.FREE.value)
+        return SubscriptionPlanType(plan_type_str)  # Convert string to PlanType enum
         
     def _initialize_tables(self):
         existing_tables = [table.name for table in self.dynamodb.tables.all()]
@@ -93,6 +128,62 @@ class SubscriptionManager:
         except ClientError as e:
             print(e.response['Error']['Message'])
             return None
+
+    def get_organization_subscription(self, org_id):
+        """Retrieve the subscription details for a given organization."""
+        try:
+            table = self.dynamodb.Table(self.subscription_table_name)
+            response = table.get_item(Key={'org_id': org_id})
+            subscription = response.get('Item')
+            
+            if not subscription:
+                # If no subscription is found, return a default free plan
+                return {
+                    'org_id': org_id,
+                    'plan_type': 'free',
+                    'status': 'active'
+                }
+            
+            return subscription
+        except Exception as e:
+            logging.error(f"Error retrieving subscription for organization {org_id}: {e}")
+            raise
+
+    def get_user_subscription(self, user_id):
+        """Retrieve the user's organization subscription or their individual subscription."""
+        try:
+            # Get the organization ID the user belongs to
+            user = self.get_user_details(user_id)
+            org_id = user.get('org_id')
+            
+            if org_id:
+                # Check the organization's subscription
+                return self.get_organization_subscription(org_id)
+            else:
+                # Fall back to individual user subscription if no org_id is found
+                return self.get_individual_user_subscription(user_id)
+        except Exception as e:
+            logging.error(f"Error retrieving subscription for user {user_id}: {e}")
+            raise
+
+    def get_individual_user_subscription(self, user_id):
+        """Retrieve the individual subscription details for a user."""
+        try:
+            response = self.subscriptions_table.get_item(Key={'id': user_id})
+            subscription = response.get('Item')
+            
+            if not subscription:
+                # If no subscription is found, return a default free plan
+                return {
+                    'user_id': user_id,
+                    'plan_type': 'free',
+                    'status': 'active'
+                }
+            
+            return subscription
+        except Exception as e:
+            logging.error(f"Error retrieving individual subscription for user {user_id}: {e}")
+            raise
 
     def update_subscription(self, subscription_id, plan_type=None, status=None, end_date=None):
         table = self.dynamodb.Table(self.subscriptions_table_name)

@@ -1,51 +1,65 @@
 import boto3
+import logging
+import uuid
+
 from botocore.exceptions import ClientError
-from uuid import uuid4
+from boto3.dynamodb.conditions import Attr
 from datetime import datetime
 
 # Import setup for DynamoDB from setup_dynamodb.py
-from user_management import UserManager
+from base_management import BaseManager
+from subscription_management import SubscriptionManager, SubscriptionPlanType
 from permissions_management import PermissionsManager
-from subscription_management import SubscriptionManager
 
-class OrganizationManager:
-    def __init__(self, dynamodb, email_util, table_prefix):
-        self.dynamodb = dynamodb
-        self.org_table_name = f'{table_prefix}_Organizations'
-        self.groups_table_name = f'{table_prefix}_Groups'
-        self.users_table_name = f'{table_prefix}_Users'
-        self.subscriptions_table_name = f'{table_prefix}_Subscriptions'
-        self.invites_table_name = f'{table_prefix}_Invites'
-        self.user_management = UserManager(dynamodb, table_prefix)
-        self.permissions_management = PermissionsManager(dynamodb, table_prefix)
-        self.subscription_management = SubscriptionManager(dynamodb, email_util, table_prefix)
+logger = logging.getLogger(__name__)
 
-    def create_organization(self, org_name, admin_user_id):
-        # Check if the user is subscribed to a team plan
-        if not self.subscription_management.is_team_plan(admin_user_id):
-            raise PermissionError("User must be subscribed to a team plan to create an organization.")
-        
-        # Check if the user has admin permissions using PermissionsManager
-        if not self.permissions_manager.check_admin_permissions(admin_user_id):
-            raise Exception(f"User '{admin_user_id}' does not have permissions to create an organization.")
-        
-        org_id = str(uuid4())
-        table = self.dynamodb.Table(self.organizations_table_name)
-        try:
-            item = {
-                'id': org_id,  # Keeping 'id' consistent as the primary key
-                'org_name': org_name,
-                'admins': [admin_user_id],  # List of admins
-                'users': [admin_user_id],   # List of users, starting with the admin
-                'created_at': str(datetime.utcnow()),
-                'updated_at': str(datetime.utcnow())
-            }
-            table.put_item(Item=item)
-            print(f"Organization '{org_name}' created successfully with ID: {org_id}.")
-            return org_id
-        except Exception as e:
-            print(f"Error creating organization: {str(e)}")
-            return None
+class OrganizationManager(BaseManager):
+    def __init__(self, dynamodb, table_prefix):
+        super().__init__(dynamodb, table_prefix)
+        self.subscription_manager = SubscriptionManager(dynamodb, table_prefix)
+        self.permissions_manager = PermissionsManager(dynamodb, table_prefix)
+
+    def create_organization(self, org_name, creator_user_id):
+        """Create a new organization and assign the creator as the admin."""
+
+        # Check if the user exists
+        user = self.users_table.get_item(Key={'id': creator_user_id}).get('Item')
+        if not user:
+            raise ValueError("Invalid user ID: User does not exist.")
+
+        # Check if the organization name already exists
+        response = self.dynamodb.Table(self.org_table_name).scan(
+            FilterExpression=Attr('org_name').eq(org_name)
+        )
+        if response.get('Items'):
+            raise ValueError(f"Organization name '{org_name}' already exists. "
+                             f"Please choose a different name.")
+
+        # Automatically determine the user's plan type
+        plan_type = self.subscription_manager.get_user_plan_type(creator_user_id)
+
+        org_id = str(uuid.uuid4())  # Generate a unique organization ID
+
+        # Add the organization to the table
+        table = self.dynamodb.Table(self.org_table_name)
+        item = {
+            'id': org_id,
+            'org_name': org_name,
+            'plan_type': plan_type.value,  # Store the plan type as a string
+            'admins': [creator_user_id],  # Assign the creator as the first admin
+            'users': [creator_user_id],   # Add the creator as a user as well
+            'created_at': str(datetime.utcnow()),  # Store creation time
+            'updated_at': str(datetime.utcnow())
+        }
+        table.put_item(Item=item)
+
+        logger.info(f"Organization '{org_name}' created successfully with "
+                    f"ID: {org_id} under the {plan_type.value} plan.")
+
+        # Assign admin permissions to the creator
+        self.permissions_manager.initialize_admin_permissions(creator_user_id)
+
+        return org_id
 
     def rename_organization(self, org_id, new_org_name):
         # Check if the new organization name is unique
@@ -155,6 +169,16 @@ class OrganizationManager:
         except ClientError as e:
             print(e.response['Error']['Message'])
 
+    def list_groups_in_organization(self, org_id):
+        try:
+            response = self.groups_table.scan(
+                FilterExpression=Key('org_id').eq(org_id)
+            )
+            return response.get('Items', [])
+        except ClientError as e:
+            print(f"Error listing groups in organization: {e}")
+            return []
+
     def add_admins(self, org_id, admin_user_ids):
         table = self.dynamodb.Table(self.org_table_name)
         try:
@@ -200,7 +224,7 @@ class OrganizationManager:
         if not user:
             raise ValueError(f"User with ID {user_id} does not exist.")
         
-        invite_id = str(uuid4())
+        invite_id = str(uuid.uuid4())
         invites_table = self.dynamodb.Table(self.invites_table_name)
 
         try:
@@ -284,6 +308,45 @@ class OrganizationManager:
         except ClientError as e:
             print(e.response['Error']['Message'])
             return []
+
+    def _check_free_plan_limits(self, org_id):
+        """Check if the organization under the free plan has reached its user or group limits."""
+        # Define limits
+        MAX_USERS = int(os.getenv('FREE_PLAN_MAX_USERS', 5))  # Default to 5 if not set
+        MAX_GROUPS = int(os.getenv('FREE_PLAN_MAX_GROUPS', 2))  # Default to 2 if not set
+
+        # Get the organization details
+        org = self.get_organization(org_id)
+        if not org:
+            raise ValueError("Organization not found")
+
+        # Check user limit
+        if len(org.get('users', [])) >= MAX_USERS:
+            raise ValueError(f"Organization has reached the maximum user limit of {MAX_USERS}.")
+
+        # Check group limit
+        if len(org.get('groups', [])) >= MAX_GROUPS:
+            raise ValueError(f"Organization has reached the maximum group limit of {MAX_GROUPS}.")
+
+        return True
+
+    # Example usage in add_user_to_organization
+    def add_user_to_organization(self, org_id, user_id):
+        # Check limits before adding a user
+        self._check_free_plan_limits(org_id)
+        
+        # Existing logic to add a user
+        table = self.dynamodb.Table(self.org_table_name)
+        try:
+            table.update_item(
+                Key={'org_id': org_id},
+                UpdateExpression="ADD users :user_id",
+                ExpressionAttributeValues={':user_id': {user_id}},
+                ReturnValues="UPDATED_NEW"
+            )
+        except ClientError as e:
+            print(e.response['Error']['Message'])
+
 
 # Example usage:
 if __name__ == "__main__":

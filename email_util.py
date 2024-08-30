@@ -3,15 +3,17 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
 import urllib.parse
 import hmac
 import hashlib
 import base64
 import traceback
 
-# Load environment variables from .env file
-load_dotenv()
+
+# Load environment variables
+from config_loader import load_environment
+load_environment()
+
 
 SEND_EMAIL = os.getenv('SEND_EMAIL')
 

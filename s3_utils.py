@@ -4,10 +4,9 @@ import os
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
-from dotenv import load_dotenv
-# Load environment variables from .env file
-load_dotenv()
-
+# Load environment variables
+from config_loader import load_environment
+load_environment()
 
 def get_client():      
     storage_type = os.getenv('STORAGE_TYPE')

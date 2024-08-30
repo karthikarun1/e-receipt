@@ -7,9 +7,11 @@ import os
 import traceback
 
 from boto3.dynamodb.conditions import Key  # Add this import statement
-from dotenv import load_dotenv
 
-load_dotenv()
+# Load environment variables
+from config_loader import load_environment
+load_environment()
+
 
 database_location = os.getenv('DATABASE_LOCATION').lower()
 database_type = os.getenv('DATABASE_TYPE').lower()

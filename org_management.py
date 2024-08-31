@@ -10,6 +10,8 @@ from datetime import datetime
 from base_management import BaseManager
 from subscription_management import SubscriptionManager, SubscriptionPlanType
 from permissions_management import PermissionsManager
+from user_management import UserManager
+from org_updates import OrganizationUpdater
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +19,11 @@ class OrganizationManager(BaseManager):
     def __init__(self, dynamodb, table_prefix):
         super().__init__(dynamodb, table_prefix)
         self.subscription_manager = SubscriptionManager(dynamodb, table_prefix)
+        self.user_manager = UserManager(dynamodb, table_prefix)
         self.permissions_manager = PermissionsManager(dynamodb, table_prefix)
+        self.updater = OrganizationUpdater(
+            self, self.user_manager, self.permissions_manager,
+            dynamodb, self.org_table_name)
 
     def create_organization(self, org_name, creator_user_id):
         """Create a new organization and assign the creator as the admin."""
@@ -61,6 +67,20 @@ class OrganizationManager(BaseManager):
 
         return org_id
 
+    def is_org_name_taken(self, org_name):
+        """
+        Check if an organization name is already taken.
+
+        :param org_name: str - The organization name to check.
+        :return: bool - True if the organization name is taken, False otherwise.
+        """
+        table = self.dynamodb.Table(self.org_table_name)
+        response = table.scan(
+            FilterExpression=Attr('org_name').eq(org_name)
+        )
+        items = response.get('Items', [])
+        return len(items) > 0
+
     def rename_organization(self, org_id, new_org_name):
         # Check if the new organization name is unique
         table = self.dynamodb.Table(self.org_table_name)
@@ -86,6 +106,21 @@ class OrganizationManager(BaseManager):
         except ClientError as e:
             print(e.response['Error']['Message'])
 
+    def get_organization_by_id(self, org_id):
+        """
+        Retrieve an organization by its ID.
+
+        :param org_id: str - The unique identifier for the organization.
+        :return: dict - The organization's details.
+        :raises ValueError: If the organization does not exist.
+        """
+        table = self.dynamodb.Table(self.org_table_name)
+        response = table.get_item(Key={'id': org_id})
+        org = response.get('Item')
+        if not org:
+            raise ValueError(f"Organization not found.")
+        return org
+
     def get_organization(self, org_id):
         table = self.dynamodb.Table(self.org_table_name)
         try:
@@ -95,7 +130,32 @@ class OrganizationManager(BaseManager):
             print(e.response['Error']['Message'])
             return None
 
-    def update_organization(self, org_id, org_name=None):
+    def get_org_id_by_name(self, org_name):
+        """
+        Retrieve the organization ID given the organization name.
+
+        :param org_name: str - The name of the organization.
+        :return: str - The organization ID.
+        :raises ValueError: If the organization with the given name is not found.
+        """
+        table = self.dynamodb.Table(self.org_table_name)
+        response = table.scan(
+            FilterExpression=Attr('org_name').eq(org_name)
+        )
+
+        items = response.get('Items', [])
+        if not items:
+            raise ValueError(f"Organization with name '{org_name}' not found.")
+
+        if len(items) > 1:
+            raise ValueError(f"Multiple organizations found with the name '{org_name}'. Please use a unique name.")
+
+        return items[0]['id']
+
+    def update_organization(self, org_id, user_id, updates):
+        return self.updater.update_organization(org_id, user_id, updates)
+
+    def update_organization_old(self, org_id, org_name=None):
         table = self.dynamodb.Table(self.org_table_name)
         update_expression = "SET updated_at = :updated_at"
         expression_attribute_values = {':updated_at': str(datetime.utcnow())}

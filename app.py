@@ -231,15 +231,44 @@ def protected_resource(user):
 @app.route('/create_organization', methods=['POST'])
 @token_required
 def create_organization(current_user):
-    data = request.json
+    data = get_request_data()
+
     org_name = data.get('org_name')
-    creator_user_id = current_user['id']  # Use the authenticated user's ID
-
     if not org_name:
-        raise ValueError("Organization name must be provided.")
+        return jsonify({'error': 'Organization name is required'}), 400
 
-    org_id = org_manager.create_organization(org_name, creator_user_id)
-    return jsonify({"message": "Organization created successfully", "org_id": org_id}), 201
+    # Call the create_organization method
+    organization = org_manager.create_organization(
+        org_name=org_name,
+        creator_user_id=current_user['id']
+    )
+
+    return jsonify({'message': 'Organization created successfully', 'organization': organization}), 201
+
+
+@app.route('/update_organization', methods=['POST'])
+@token_required
+def update_organization(current_user):
+    data = get_request_data()
+
+    org_id = data.get('org_id')
+    if not org_id:
+        return jsonify({'error': 'Organization ID is required'}), 400
+
+    # Check if the organization exists
+    org = org_manager.get_organization_by_id(org_id)
+
+    # Extract the fields to update, excluding 'org_id'
+    updates = {key: value for key, value in data.items() if key != 'org_id'}
+
+    # Proceed with the update logic
+    updated_org = org_manager.update_organization(
+        org_id=org_id,
+        user_id=current_user['id'],  # Pass the current user's ID
+        updates=updates
+    )
+
+    return jsonify({'message': 'Organization updated successfully', 'organization': updated_org}), 200
 
 
 @app.route('/change_password', methods=['POST'])
@@ -1172,6 +1201,11 @@ def handle_type_error(error):
 def handle_io_error(error):
     logger.error("IO error with stack trace: %s", traceback.format_exc())
     return jsonify({"error": "An error occurred while accessing a resource. Please try again later."}), 500
+
+@app.errorhandler(PermissionError)
+def handle_permission_error(error):
+    logger.error(f"Permission denied: {str(error)}")
+    return jsonify({'error': str(error)}), 403
 
 class MyCustomException(Exception):
     pass

@@ -183,7 +183,7 @@ def create_permissions_table(dynamodb_resource, prefix):
     print(f"Table {prefix}_Permissions created successfully.")
 
 
-def create_organization_table(dynamodb_resource, prefix):
+def create_organization_table_old(dynamodb_resource, prefix):
     organizations_table = dynamodb_resource.create_table(
         TableName=f"{prefix}_Organizations",
         KeySchema=[
@@ -191,6 +191,41 @@ def create_organization_table(dynamodb_resource, prefix):
         ],
         AttributeDefinitions=[
             {'AttributeName': 'id', 'AttributeType': 'S'}
+        ],
+        ProvisionedThroughput={
+            'ReadCapacityUnits': 5,
+            'WriteCapacityUnits': 5
+        }
+    )
+    organizations_table.wait_until_exists()
+    print(f"Table {prefix}_Organizations created successfully.")
+
+
+def create_organization_table(dynamodb_resource, prefix):
+    table_name = f"{prefix}_Organizations"
+    organizations_table = dynamodb_resource.create_table(
+        TableName=table_name,
+        KeySchema=[
+            {'AttributeName': 'id', 'KeyType': 'HASH'}  # Partition key
+        ],
+        AttributeDefinitions=[
+            {'AttributeName': 'id', 'AttributeType': 'S'},  # Primary key
+            {'AttributeName': 'org_name', 'AttributeType': 'S'}  # GSI key
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                'IndexName': 'OrganizationNameIndex',
+                'KeySchema': [
+                    {'AttributeName': 'org_name', 'KeyType': 'HASH'}
+                ],
+                'Projection': {
+                    'ProjectionType': 'ALL'  # Include all attributes in the index
+                },
+                'ProvisionedThroughput': {
+                    'ReadCapacityUnits': 5,
+                    'WriteCapacityUnits': 5
+                }
+            }
         ],
         ProvisionedThroughput={
             'ReadCapacityUnits': 5,
@@ -322,6 +357,28 @@ def create_all_tables(dynamodb_resource, prefix):
         traceback.print_exc()  # This prints the full stack trace
 
 
+def drop_table(dynamodb_client, table_name):
+    # Check if the table exists
+    response = dynamodb_client.list_tables()
+    table_names = response.get('TableNames', [])
+    
+    if table_name not in table_names:
+        print(f"Table {table_name} does not exist.")
+        return
+    
+    # Drop the specified table
+    print(f"Dropping table: {table_name}")
+    dynamodb_client.delete_table(TableName=table_name)
+    
+    # Wait for the table deletion to complete
+    dynamodb_client.get_waiter('table_not_exists').wait(TableName=table_name)
+    print(f"Table {table_name} dropped successfully.")
+
+# Example usage:
+# dynamodb_client = boto3.client('dynamodb', region_name='your-region')
+# drop_table(dynamodb_client, 'Dev_Organizations')
+
+
 def drop_all_tables(dynamodb_client):
     try:
         # List all tables
@@ -428,6 +485,9 @@ if __name__ == "__main__":
     table_prefix = 'Dev'
     dynamodb_resource = boto3.resource('dynamodb', endpoint_url='http://localhost:8000', region_name='us-east-1')
     dynamodb_client = boto3.client('dynamodb', endpoint_url='http://localhost:8000', region_name='us-east-1')
+
+    drop_table(dynamodb_client, 'Dev_Organizations')
+    create_organization_table(dynamodb_resource, table_prefix)
 
     are_you_sure = input('Are you sure you want to drop and recreate all tables? (y/n):')
     if are_you_sure.lower() in ('y', 'yes'):

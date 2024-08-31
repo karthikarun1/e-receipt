@@ -33,6 +33,18 @@ class PermissionsManager(BaseManager):
         """Convert list of Permission enums to strings."""
         return [permission.value if isinstance(permission, Permission) else permission for permission in permissions]
 
+    def is_user_admin_of_organization(self, org_id, user_id):
+        table = self.dynamodb.Table(self.org_table_name)
+        try:
+            response = table.get_item(Key={'id': org_id})
+            org = response.get('Item')
+            if not org or user_id not in org.get('admins', []):
+                return False
+            return True
+        except Exception as e:
+            logger.error(f"Error checking admin permissions for user {user_id} in org {org_id}: {str(e)}")
+            return False
+
     def check_admin_permissions(self, user_id):
         table = self.dynamodb.Table(self.permissions_table)
         try:

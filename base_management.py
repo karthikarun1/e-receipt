@@ -10,11 +10,14 @@ class BaseManager:
         self.org_table_name = f'{table_prefix}_Organizations'
         self.permissions_table_name = f'{table_prefix}_Permissions'
         self.subscriptions_table_name = f'{table_prefix}_Subscriptions'
+        self.invites_table_name = f'{table_prefix}_Invites'
         self.user_group_membership_table_name = f'{table_prefix}_UserGroupMembership'
 
         self.users_table = dynamodb.Table(self.users_table_name)
         self.groups_table = dynamodb.Table(self.groups_table_name)
+        self.org_table = dynamodb.Table(self.org_table_name)
         self.subscriptions_table = dynamodb.Table(self.subscriptions_table_name)
+        self.invites_table = dynamodb.Table(self.invites_table_name)
         self.permissions_table = dynamodb.Table(self.permissions_table_name)
         self.user_group_membership_table = dynamodb.Table(self.user_group_membership_table_name)
         self.verification_table = dynamodb.Table(f'{table_prefix}_EmailVerification')

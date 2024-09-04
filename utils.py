@@ -1,3 +1,4 @@
+import base64
 import bleach
 import boto3
 import jwt
@@ -11,6 +12,9 @@ import traceback
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
+
+from datetime import datetime
+from urllib.parse import unquote
 
 logger = logging.getLogger(__name__)
 
@@ -283,4 +287,51 @@ def sanitize_input(data):
         # sanitized_data = bleach.clean(sanitized_data, tags=[], attributes={}, strip=True)
         return sanitized_data
     else:
+        return data
+
+
+def format_timestamp(expires_at):
+    """
+    Ensure the 'expires_at' timestamp is properly formatted to ISO format with colons.
+    If it's already in the correct format, it will remain unchanged.
+    """
+    # Decode the URL-encoded string first
+    expires_at = unquote(expires_at)
+
+    # Try to convert the string to a datetime object
+    try:
+        expires_at_dt = datetime.fromisoformat(expires_at)
+    except ValueError:
+        raise ValueError(f"Invalid format for 'expires_at': {expires_at}")
+
+    # Return it back to the ISO format, ensuring colons are in place
+    return expires_at_dt.isoformat()
+
+
+def remove_base64_padding(encoded_str):
+    """Remove base64 padding '=' from the encoded string."""
+    return encoded_str.rstrip('=')
+
+
+def add_base64_padding(encoded_str):
+    """Add base64 padding '=' to make the encoded string length a multiple of 4."""
+    return encoded_str + '=' * (-len(encoded_str) % 4)
+
+
+def convert_sets_to_lists(data):
+    """
+    Recursively convert all sets in the data to lists.
+    Handles nested dictionaries and lists, ensuring no infinite recursion.
+    """
+    if isinstance(data, dict):
+        # Recursively apply the conversion for each key-value pair
+        return {k: convert_sets_to_lists(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        # Recursively apply the conversion for each item in the list
+        return [convert_sets_to_lists(i) for i in data]
+    elif isinstance(data, set):
+        # Convert sets to lists to ensure they are JSON serializable
+        return list(data)
+    else:
+        # If the data is neither dict, list, nor set, return it as is
         return data

@@ -1,5 +1,11 @@
+# org_updates.py
+
 from datetime import datetime
 from enum import Enum
+
+class SubscriptionPlanType(Enum):
+    FREE = "free"
+    PAID = "paid"
 
 class OrganizationUpdater:
     def __init__(self, org_manager, user_manager, permissions_manager, dynamodb, table_name):
@@ -10,11 +16,9 @@ class OrganizationUpdater:
         self.table_name = table_name
 
     def update_organization(self, org_id, user_id, updates):
-        """
-        Main function to update organization details with provided key-value pairs.
-        """
         self._check_permissions(org_id, user_id)
         org = self._get_organization(org_id)
+        self._validate_plan_type_change(org, updates)  # Validate plan_type before updating
         update_expression, expression_values = self._prepare_updates(org, user_id, updates)
         return self._apply_updates(org_id, update_expression, expression_values)
 
@@ -89,6 +93,42 @@ class OrganizationUpdater:
             if not self.user_manager.user_exists(admin_id):
                 raise ValueError(f"Invalid admin ID: {admin_id}")
 
+    def _validate_plan_type_change(self, org, updates):
+        """
+        Validate the transition of plan_type, ensuring that any change to a PAID plan is valid.
+        """
+        if "plan_type" in updates:
+            new_plan_type = updates["plan_type"]
+            if isinstance(new_plan_type, str):
+                try:
+                    new_plan_type = SubscriptionPlanType(new_plan_type.lower())
+                except ValueError:
+                    raise ValueError(f"Invalid plan type: {new_plan_type}")
+
+            if new_plan_type == SubscriptionPlanType.PAID:
+                self._check_paid_plan_eligibility(org)
+            elif new_plan_type == SubscriptionPlanType.FREE:
+                # Additional logic can be added here if there are restrictions on switching back to free
+                pass
+    
     def _validate_plan_type(self, plan_type):
         if not isinstance(plan_type, SubscriptionPlanType):
             raise ValueError(f"Invalid plan type: {plan_type}")
+
+    def _check_paid_plan_eligibility(self, org):
+        """
+        Check if the organization is eligible to switch to a PAID plan.
+        """
+        if not org.get('payment_status') == 'active':
+            raise ValueError("Organization does not have an active payment method.")
+        if org.get('on_free_trial'):
+            raise ValueError("Organization is currently on a free trial and cannot upgrade to a paid plan.")
+        if not self._is_approved_for_paid_plan(org['id']):
+            raise ValueError("Organization has not been approved for a paid plan by an admin.")
+    
+    def _is_approved_for_paid_plan(self, org_id):
+        """
+        Check if the organization has been approved for a paid plan.
+        This is a placeholder method; implement actual logic as needed.
+        """
+        return True  # Implement actual logic to check if the org is approved for a paid plan

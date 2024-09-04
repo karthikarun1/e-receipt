@@ -325,10 +325,10 @@ def create_invites_table(dynamodb_resource, prefix):
     invites_table = dynamodb_resource.create_table(
         TableName=f"{prefix}_Invites",
         KeySchema=[
-            {'AttributeName': 'invite_id', 'KeyType': 'HASH'}  # Partition key
+            {'AttributeName': 'id', 'KeyType': 'HASH'}  # Partition key
         ],
         AttributeDefinitions=[
-            {'AttributeName': 'invite_id', 'AttributeType': 'S'}
+            {'AttributeName': 'id', 'AttributeType': 'S'}
         ],
         ProvisionedThroughput={
             'ReadCapacityUnits': 5,
@@ -488,6 +488,9 @@ if __name__ == "__main__":
 
     drop_table(dynamodb_client, 'Dev_Organizations')
     create_organization_table(dynamodb_resource, table_prefix)
+
+    #drop_table(dynamodb_client, 'Dev_Invites')
+    #create_invites_table(dynamodb_resource, table_prefix)
 
     are_you_sure = input('Are you sure you want to drop and recreate all tables? (y/n):')
     if are_you_sure.lower() in ('y', 'yes'):

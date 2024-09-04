@@ -1,3 +1,4 @@
+import base64
 import os
 import smtplib
 from email.mime.text import MIMEText
@@ -6,9 +7,10 @@ from datetime import datetime, timedelta
 import urllib.parse
 import hmac
 import hashlib
-import base64
 import traceback
+import utils
 
+from urllib.parse import urlencode
 
 # Load environment variables
 from config_loader import load_environment
@@ -24,7 +26,7 @@ class EmailUtil:
         self.email_user = os.getenv('EMAIL_USER')
         self.email_password = os.getenv('EMAIL_PASSWORD')
         self.link_secret = os.getenv('LINK_SECRET', 'your-secret-key')
-        self.verification_url = os.getenv('EMAIL_VERIFICATION_URL')
+        self.verification_url = f"{os.getenv('BASE_URL')}/verify_email"
         self.reset_url = os.getenv('PASSWORD_RESET_URL')
 
     def send_email(self, to_email, subject, body):
@@ -53,33 +55,60 @@ class EmailUtil:
             print(f"Failed to send email: {e}")
             traceback.print_exc()  # This prints the full stack trace
 
-    def generate_secure_link(self, base_url, params, expiration_minutes=60):
-        """Generate a secure link with an expiration timestamp."""
-        expires_at = datetime.utcnow() + timedelta(minutes=expiration_minutes)
-        params['expires_at'] = expires_at.isoformat()
-        params_string = urllib.parse.urlencode(params)
-
-        # Create a signature using the secret key and the params
-        signature = self._generate_signature(params_string)
-        params['signature'] = signature
-
-        secure_link = f"{base_url}?{urllib.parse.urlencode(params)}"
-        return secure_link
-
     def _generate_signature(self, data):
         """Generate HMAC signature for the data using the secret key."""
+        print(f"10----------generate_signature params {data}")
         hmac_obj = hmac.new(self.link_secret.encode(), data.encode(), hashlib.sha256)
-        return base64.urlsafe_b64encode(hmac_obj.digest()).decode()
+        signature = base64.urlsafe_b64encode(hmac_obj.digest()).decode().strip()  # Remove any possible trailing whitespace
+        signature = utils.remove_base64_padding(signature)
+        print(f"20-----------Generated signature: {signature}")
+        return signature
+
 
     def validate_signature(self, params):
         """Validate the signature to ensure the link hasn't been tampered with."""
         signature = params.pop('signature', None)
         if not signature:
             return False
-        
-        params_string = urllib.parse.urlencode(params)
+
+        # Use the utility function to ensure 'expires_at' is properly formatted
+        expires_at = utils.format_timestamp(params['expires_at'])
+
+        # Manually build the params string for signature validation
+        params_string = f"invitation_id={params['invitation_id']}&expires_at={expires_at}"
+        print(f"30---------Validating signature with params: {params_string}")
+
+        # Generate the expected signature based on the parameters
         expected_signature = self._generate_signature(params_string)
+
+        # Ensure the padding is removed from both signatures for comparison
+        expected_signature = utils.remove_base64_padding(expected_signature)
+        signature = utils.remove_base64_padding(signature)
+
+        # Debugging: Check lengths and exact characters of the signatures
+        print(f"40-------------Expected signature length: {len(expected_signature)}")
+        print(f"50-------------Received signature length: {len(signature)}")
+        print(f"60-------------Expected signature bytes: {expected_signature.encode('utf-8')}")
+        print(f"70-------------Received signature bytes: {signature.encode('utf-8')}")
+
         return hmac.compare_digest(expected_signature, signature)
+
+    def generate_secure_link(self, base_url, params, expiration_minutes=60):
+        """Generate a secure link with an expiration timestamp."""
+        expires_at = datetime.utcnow() + timedelta(minutes=expiration_minutes)
+        params['expires_at'] = expires_at.isoformat()
+
+        # Use the utility function to ensure consistent formatting
+        params_string = f"invitation_id={params['invitation_id']}&expires_at={utils.format_timestamp(params['expires_at'])}"
+        print(f"--------------Generating signature with params: {params_string}")
+
+        # Generate the signature
+        signature = self._generate_signature(params_string)
+        params['signature'] = signature
+
+        # Build the full secure link
+        secure_link = f"{base_url}?{urlencode(params)}"
+        return secure_link
 
     def send_confirmation_email(self, to_email, subscription_id, base_url='https://example.com/confirm'):
         params = {'subscription_id': subscription_id}

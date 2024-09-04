@@ -1,17 +1,24 @@
 import boto3
 import logging
+import os
 import uuid
 
 from botocore.exceptions import ClientError
 from boto3.dynamodb.conditions import Attr
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Import setup for DynamoDB from setup_dynamodb.py
 from base_management import BaseManager
-from subscription_management import SubscriptionManager, SubscriptionPlanType
+from invitation_manager import InvitationManager
+from invite_type import InviteType
 from permissions_management import PermissionsManager
+from subscription_management import SubscriptionManager, SubscriptionPlanType
 from user_management import UserManager
 from org_updates import OrganizationUpdater
+
+# Load environment variables
+from config_loader import load_environment
+load_environment()
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +31,86 @@ class OrganizationManager(BaseManager):
         self.updater = OrganizationUpdater(
             self, self.user_manager, self.permissions_manager,
             dynamodb, self.org_table_name)
+        # Initialize InvitationManager once in the constructor
+        self.invitation_manager = InvitationManager(
+            self.org_table, self.users_table, self.invites_table, self.email_util
+        )
+
+    def get_all_organizations(self):
+        try:
+            # Scan the entire organizations table to retrieve all organizations
+            response = self.org_table.scan()
+            organizations = response.get('Items', [])
+
+            return organizations
+
+        except ClientError as e:
+            logging.error(e)
+            raise LookupError("An error occurred while retrieving all organizations.") from e
+
+    def get_user_organizations(self, user_id):
+        try:
+            # Retrieve the user record
+            response = self.users_table.get_item(Key={'id': user_id})
+            user = response.get('Item')
+
+            if not user:
+                raise LookupError("User not found.")
+
+            # Use expression attribute names to avoid reserved keywords
+            response = self.org_table.scan(
+                FilterExpression="contains(#users_attr, :user_id)",
+                ExpressionAttributeNames={"#users_attr": "users"},
+                ExpressionAttributeValues={":user_id": user_id}
+            )
+
+            organizations = response.get('Items', [])
+            return organizations
+
+        except ClientError as e:
+            logging.error(e)
+            raise LookupError("An error occurred while retrieving user organizations.") from e
+
+    def get_organization_details(self, org_id, user_id):
+        try:
+            # Fetch the organization details
+            organization = self.get_organization(org_id)
+
+            if not organization:
+                raise LookupError("Organization not found.")
+
+            print (f'organization is {organization}')
+
+            # Check if the user is authorized to view the organization details
+            if user_id not in organization.get('users', []) and user_id not in organization.get('admins', []):
+                raise PermissionError("User is not authorized to view this organization's details.")
+
+            # Fetch details of users and admins
+            users = []
+            admins = []
+            for org_user_id in organization.get('users', []):
+                user_response = self.users_table.get_item(Key={'id': org_user_id})
+                user = user_response.get('Item')
+                if user:
+                    users.append({'id': user['id'], 'username': user['username'], 'email': user['email']})
+                    if org_user_id in organization.get('admins', []):
+                        admins.append(user['username'])
+
+            organization_details = {
+                "organization_id": organization['id'],
+                "organization_name": organization['org_name'],
+                "plan_type": organization['plan_type'],
+                "created_at": organization['created_at'],
+                "updated_at": organization['updated_at'],
+                "users": users,
+                "admins": admins
+            }
+
+            return organization_details
+
+        except ClientError as e:
+            logging.error(e)
+            raise LookupError("An error occurred while retrieving organization details.") from e
 
     def create_organization(self, org_name, creator_user_id):
         """Create a new organization and assign the creator as the admin."""
@@ -52,8 +139,8 @@ class OrganizationManager(BaseManager):
             'id': org_id,
             'org_name': org_name,
             'plan_type': plan_type.value,  # Store the plan type as a string
-            'admins': [creator_user_id],  # Assign the creator as the first admin
-            'users': [creator_user_id],   # Add the creator as a user as well
+            'admins': {creator_user_id},  # Assign the creator as the first admin
+            'users': {creator_user_id},   # Add the creator as a user as well
             'created_at': str(datetime.utcnow()),  # Store creation time
             'updated_at': str(datetime.utcnow())
         }
@@ -122,13 +209,13 @@ class OrganizationManager(BaseManager):
         return org
 
     def get_organization(self, org_id):
-        table = self.dynamodb.Table(self.org_table_name)
+        print (f'---------org_id {org_id}')
         try:
-            response = table.get_item(Key={'org_id': org_id})
+            response = self.org_table.get_item(Key={'id': org_id})
             return response.get('Item')
         except ClientError as e:
-            print(e.response['Error']['Message'])
-            return None
+            logging.error(e)
+            raise ValueError(e.response['Error']['Message'])
 
     def get_org_id_by_name(self, org_name):
         """
@@ -279,87 +366,6 @@ class OrganizationManager(BaseManager):
         except ClientError as e:
             print(e.response['Error']['Message'])
 
-    def invite_user_to_organization(self, org_id, user_id):
-        user = self.user_management.get_user_details(user_id)
-        if not user:
-            raise ValueError(f"User with ID {user_id} does not exist.")
-        
-        invite_id = str(uuid.uuid4())
-        invites_table = self.dynamodb.Table(self.invites_table_name)
-
-        try:
-            invites_table.put_item(
-                Item={
-                    'invite_id': invite_id,
-                    'org_id': org_id,
-                    'user_id': user_id,
-                    'status': 'pending',
-                    'created_at': str(datetime.utcnow()),
-                    'expires_at': str(datetime.utcnow())  # Add expiration logic as needed
-                }
-            )
-            print(f"Invitation sent to user {user_id} to join organization {org_id}.")
-            return invite_id
-        except ClientError as e:
-            print(e.response['Error']['Message'])
-            return None
-
-    def accept_invite(self, invite_id):
-        invites_table = self.dynamodb.Table(self.invites_table_name)
-        
-        try:
-            response = invites_table.get_item(Key={'invite_id': invite_id})
-            invite = response.get('Item')
-            if not invite:
-                raise ValueError(f"Invite with ID {invite_id} does not exist.")
-            if invite['status'] != 'pending':
-                raise ValueError(f"Invite with ID {invite_id} is not pending.")
-
-            org_id = invite['org_id']
-            user_id = invite['user_id']
-
-            # Add user to organization
-            self.add_user_to_organization(org_id, user_id)
-
-            # Update invite status
-            invites_table.update_item(
-                Key={'invite_id': invite_id},
-                UpdateExpression="SET status = :status, updated_at = :updated_at",
-                ExpressionAttributeValues={
-                    ':status': 'accepted',
-                    ':updated_at': str(datetime.utcnow())
-                },
-                ReturnValues="UPDATED_NEW"
-            )
-            print(f"User {user_id} accepted the invite to join organization {org_id}.")
-        except ClientError as e:
-            print(e.response['Error']['Message'])
-
-    def reject_invite(self, invite_id):
-        invites_table = self.dynamodb.Table(self.invites_table_name)
-        
-        try:
-            response = invites_table.get_item(Key={'invite_id': invite_id})
-            invite = response.get('Item')
-            if not invite:
-                raise ValueError(f"Invite with ID {invite_id} does not exist.")
-            if invite['status'] != 'pending':
-                raise ValueError(f"Invite with ID {invite_id} is not pending.")
-
-            # Update invite status
-            invites_table.update_item(
-                Key={'invite_id': invite_id},
-                UpdateExpression="SET status = :status, updated_at = :updated_at",
-                ExpressionAttributeValues={
-                    ':status': 'rejected',
-                    ':updated_at': str(datetime.utcnow())
-                },
-                ReturnValues="UPDATED_NEW"
-            )
-            print(f"User {invite['user_id']} rejected the invite to join organization {invite['org_id']}.")
-        except ClientError as e:
-            print(e.response['Error']['Message'])
-
     def list_organizations(self):
         table = self.dynamodb.Table(self.org_table_name)
         try:
@@ -390,7 +396,6 @@ class OrganizationManager(BaseManager):
 
         return True
 
-    # Example usage in add_user_to_organization
     def add_user_to_organization(self, org_id, user_id):
         # Check limits before adding a user
         self._check_free_plan_limits(org_id)
@@ -406,6 +411,28 @@ class OrganizationManager(BaseManager):
             )
         except ClientError as e:
             print(e.response['Error']['Message'])
+
+    def invite_users(self, org_id, inviter_id, user_ids, invite_type):
+        return self.invitation_manager.invite_users(
+            org_id, inviter_id, user_ids, invite_type
+        )
+
+    def invite_user_to_organization(self, org_id, user_id):
+        return self.invitation_manager.invite_users(
+            org_id, inviter_id=None, user_ids=[user_id], 
+            invite_type=InviteType.ORGANIZATION
+        )
+
+    def accept_invite(self, invite_id):
+        return self.invitation_manager.accept_invite(invite_id)
+
+    def reject_invite(self, invite_id):
+        return self.invitation_manager.reject_invite(invite_id)
+
+    def process_invitation(self, invitation_id, expires_at, signature):
+        return self.invitation_manager.process_invitation(
+            invitation_id, expires_at, signature
+        )
 
 
 # Example usage:

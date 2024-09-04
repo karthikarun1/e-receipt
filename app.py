@@ -21,16 +21,18 @@ from flask import Flask, redirect, request, jsonify, render_template_string, sen
 from flasgger import Swagger
 from input_validator import InputValidator
 from prometheus_client import CollectorRegistry, Gauge, generate_latest, Summary, REGISTRY
+from urllib.parse import unquote
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 
 # User defined
-from superuser_management import register_superuser_command
-from user_management import UserManager
-from org_management import OrganizationManager
-from subscription_management import SubscriptionManager
-from storage import MlModelStorage
+from invite_type import InviteType
 from metadata_store import MetadataStore
+from org_management import OrganizationManager
+from superuser_management import register_superuser_command
+from storage import MlModelStorage
+from subscription_management import SubscriptionManager
+from user_management import UserManager
 
 # load environment variables
 from config_loader import load_environment
@@ -271,6 +273,87 @@ def update_organization(current_user):
     return jsonify({'message': 'Organization updated successfully', 'organization': updated_org}), 200
 
 
+@app.route('/organization/details', methods=['GET'])
+@token_required
+def view_organization_details(current_user):
+    # Get request data
+    data = get_request_data()
+
+    # Extract organization ID from the request data
+    org_id = data.get('org_id')
+    if not org_id:
+        return jsonify({"error": "Organization ID is required."}), 400
+
+    # Fetch organization details with authorization check
+    organization_details = org_manager.get_organization_details(org_id, current_user['id'])
+
+    return jsonify(organization_details), 200
+
+
+@app.route('/organization/invite', methods=['POST'])
+@token_required
+def invite_users_to_organization(current_user):
+    data = get_request_data()
+
+    org_id = data.get('org_id')
+    user_ids = data.get('user_ids')
+    invite_type = InviteType.ORGANIZATION  # Set the invite type as ORGANIZATION
+
+    if not org_id or not user_ids:
+        return jsonify({"error": "Organization ID and user IDs are required."}), 400
+
+    # Invite users to the organization
+    invited_users = org_manager.invite_users(org_id, current_user['id'], user_ids, invite_type)
+
+    if not invited_users:
+        return jsonify({"message": "No new invitations were sent. The specified users might already be members."}), 200
+
+    return jsonify({"message": "Invitations sent successfully.", "invited_users": invited_users}), 200
+
+
+@app.route('/invite', methods=['GET'])
+def process_invite():
+    data = get_request_data()
+    # Extract query parameters
+    invitation_id = data.get('invitation_id')
+    expires_at = unquote(data.get('expires_at'))
+    signature = data.get('signature')
+
+    print (f'------invitation id {invitation_id}')
+    print (f'------expires at {expires_at}')
+    print (f'------ signature {signature}')
+
+    if not invitation_id or not expires_at or not signature:
+        return jsonify({"error": "Invitation ID, expiration time, and signature are required."}), 400
+
+    # Process the invitation
+    result = org_manager.process_invitation(invitation_id, expires_at, signature)
+
+    return jsonify(result), 200
+
+
+@app.route('/user/organizations', methods=['GET'])
+@token_required
+def list_user_organizations(current_user):
+    # Get the current user's ID from the token
+    user_id = current_user['id']
+
+    # Fetch organizations the user belongs to
+    organizations = org_manager.get_user_organizations(user_id)
+
+    if not organizations:
+        return jsonify({"message": "User does not belong to any organizations."}), 404
+
+    return jsonify({"organizations": organizations}), 200
+
+
+@app.route('/list_all_organizations', methods=['GET'])
+@superuser_required
+def list_all_organizations(current_user):
+    organizations = org_manager.get_all_organizations()
+    return jsonify({"organizations": organizations}), 200
+
+
 @app.route('/change_password', methods=['POST'])
 @token_required
 def change_password(current_user):
@@ -477,7 +560,7 @@ def list_table_contents(user, table_name):
 
     # Scan the table to get all items
     response = table.scan()
-    items = response.get('Items', [])
+    items = utils.convert_sets_to_lists(response.get('Items', []))
 
     return jsonify({'status': 'success', 'data': items}), 200
 
@@ -488,7 +571,7 @@ def list_table_contents(user, table_name):
 @superuser_required
 def token_remaining_time(user):
     data = get_request_data()
-    token = data.get("token")
+    token = data.get("token_to_check")
 
     if not token:
         return jsonify({"error": "Token is required"}), 400
@@ -555,11 +638,16 @@ def list_all_users(user):
     return jsonify(users), 200
 
 
-# superuser 
 @app.route('/list_user/<string:username>', methods=['GET'])
 @superuser_required
 def list_user(user, username):
-    user = user_manager.get_user_details(username)
+    listed_user = user_manager.get_user_details(username)
+    return jsonify(listed_user), 200
+
+
+@app.route('/whoami', methods=['GET'])
+@token_required
+def whoami(user):
     return jsonify(user), 200
 
 
@@ -1166,6 +1254,11 @@ def handle_value_error(error):
     if LOG_VALUEERROR:
         logger.error("Validation error with stack trace: %s", traceback.format_exc())
     return jsonify({"error": str(error)}), 400
+
+@app.errorhandler(LookupError)
+def handle_lookup_error(error):
+    logger.error("Lookup error: %s", str(error))
+    return jsonify({"error": str(error)}), 404
 
 @app.errorhandler(Exception)
 def handle_unexpected_error(error):

@@ -486,11 +486,11 @@ if __name__ == "__main__":
     dynamodb_resource = boto3.resource('dynamodb', endpoint_url='http://localhost:8000', region_name='us-east-1')
     dynamodb_client = boto3.client('dynamodb', endpoint_url='http://localhost:8000', region_name='us-east-1')
 
-    drop_table(dynamodb_client, 'Dev_Organizations')
-    create_organization_table(dynamodb_resource, table_prefix)
+    #drop_table(dynamodb_client, 'Dev_Organizations')
+    #create_organization_table(dynamodb_resource, table_prefix)
 
-    #drop_table(dynamodb_client, 'Dev_Invites')
-    #create_invites_table(dynamodb_resource, table_prefix)
+    drop_table(dynamodb_client, 'Dev_Invites')
+    create_invites_table(dynamodb_resource, table_prefix)
 
     are_you_sure = input('Are you sure you want to drop and recreate all tables? (y/n):')
     if are_you_sure.lower() in ('y', 'yes'):

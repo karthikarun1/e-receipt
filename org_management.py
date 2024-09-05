@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 # Import setup for DynamoDB from setup_dynamodb.py
 from base_management import BaseManager
-from invitation_manager import InvitationManager
+from invitation_manager_by_email import InvitationManager
 from invite_type import InviteType
 from permissions_management import PermissionsManager
 from subscription_management import SubscriptionManager, SubscriptionPlanType
@@ -31,10 +31,7 @@ class OrganizationManager(BaseManager):
         self.updater = OrganizationUpdater(
             self, self.user_manager, self.permissions_manager,
             dynamodb, self.org_table_name)
-        # Initialize InvitationManager once in the constructor
-        self.invitation_manager = InvitationManager(
-            self.org_table, self.users_table, self.invites_table, self.email_util
-        )
+        self.invitation_manager = InvitationManager(dynamodb, table_prefix)
 
     def get_all_organizations(self):
         try:
@@ -422,12 +419,6 @@ class OrganizationManager(BaseManager):
             org_id, inviter_id=None, user_ids=[user_id], 
             invite_type=InviteType.ORGANIZATION
         )
-
-    def accept_invite(self, invite_id):
-        return self.invitation_manager.accept_invite(invite_id)
-
-    def reject_invite(self, invite_id):
-        return self.invitation_manager.reject_invite(invite_id)
 
     def process_invitation(self, invitation_id, expires_at, signature):
         return self.invitation_manager.process_invitation(

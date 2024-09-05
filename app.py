@@ -290,6 +290,27 @@ def view_organization_details(current_user):
     return jsonify(organization_details), 200
 
 
+@app.route('/organization/invite_by_emails', methods=['POST'])
+@token_required
+def invite_users_to_organization_by_email(current_user):
+    data = get_request_data()
+
+    org_id = data.get('org_id')
+    emails = data.get('emails')
+
+    if not org_id or not emails:
+        return jsonify({"error": "Organization ID and emails are required."}), 400
+
+    invite_type = InviteType.ORGANIZATION  # Set the invite type as ORGANIZATION
+    # Invite users by their email addresses
+    invited_users = org_manager.invite_users(org_id, current_user['id'], emails, invite_type)
+
+    if not invited_users:
+        return jsonify({"message": "No new invitations were sent. The specified emails might already belong to members."}), 200
+
+    return jsonify({"message": "Invitations sent successfully.", "invited_users": invited_users}), 200
+
+
 @app.route('/organization/invite', methods=['POST'])
 @token_required
 def invite_users_to_organization(current_user):
@@ -343,6 +364,8 @@ def list_user_organizations(current_user):
 
     if not organizations:
         return jsonify({"message": "User does not belong to any organizations."}), 404
+
+    organizations = utils.convert_sets_to_lists(organizations)
 
     return jsonify({"organizations": organizations}), 200
 

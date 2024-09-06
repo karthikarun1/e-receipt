@@ -76,8 +76,6 @@ class OrganizationManager(BaseManager):
             if not organization:
                 raise LookupError("Organization not found.")
 
-            print (f'organization is {organization}')
-
             # Check if the user is authorized to view the organization details
             if user_id not in organization.get('users', []) and user_id not in organization.get('admins', []):
                 raise PermissionError("User is not authorized to view this organization's details.")
@@ -118,7 +116,7 @@ class OrganizationManager(BaseManager):
             raise ValueError("Invalid user ID: User does not exist.")
 
         # Check if the organization name already exists
-        response = self.dynamodb.Table(self.org_table_name).scan(
+        response = self.org_table.scan(
             FilterExpression=Attr('org_name').eq(org_name)
         )
         if response.get('Items'):
@@ -131,7 +129,6 @@ class OrganizationManager(BaseManager):
         org_id = str(uuid.uuid4())  # Generate a unique organization ID
 
         # Add the organization to the table
-        table = self.dynamodb.Table(self.org_table_name)
         item = {
             'id': org_id,
             'org_name': org_name,
@@ -141,7 +138,7 @@ class OrganizationManager(BaseManager):
             'created_at': str(datetime.utcnow()),  # Store creation time
             'updated_at': str(datetime.utcnow())
         }
-        table.put_item(Item=item)
+        self.org_table.put_item(Item=item)
 
         logger.info(f"Organization '{org_name}' created successfully with "
                     f"ID: {org_id} under the {plan_type.value} plan.")
@@ -158,8 +155,7 @@ class OrganizationManager(BaseManager):
         :param org_name: str - The organization name to check.
         :return: bool - True if the organization name is taken, False otherwise.
         """
-        table = self.dynamodb.Table(self.org_table_name)
-        response = table.scan(
+        response = self.org_table.scan(
             FilterExpression=Attr('org_name').eq(org_name)
         )
         items = response.get('Items', [])
@@ -167,8 +163,7 @@ class OrganizationManager(BaseManager):
 
     def rename_organization(self, org_id, new_org_name):
         # Check if the new organization name is unique
-        table = self.dynamodb.Table(self.org_table_name)
-        response = table.scan(
+        response = self.org_table.scan(
             FilterExpression="org_name = :new_org_name",
             ExpressionAttributeValues={":new_org_name": new_org_name}
         )
@@ -177,8 +172,8 @@ class OrganizationManager(BaseManager):
 
         # Update the organization name
         try:
-            table.update_item(
-                Key={'org_id': org_id},
+            self.org_table.update_item(
+                Key={'id': org_id},
                 UpdateExpression="SET org_name = :new_org_name, updated_at = :updated_at",
                 ExpressionAttributeValues={
                     ':new_org_name': new_org_name,
@@ -186,9 +181,10 @@ class OrganizationManager(BaseManager):
                 },
                 ReturnValues="UPDATED_NEW"
             )
-            print(f"Organization {org_id} renamed to {new_org_name}.")
         except ClientError as e:
-            print(e.response['Error']['Message'])
+            logger.error(f"ClientError: {e.response['Error']['Message']}")
+            # Re-raise the error to be caught by the error handler in app.py
+            raise
 
     def get_organization_by_id(self, org_id):
         """
@@ -198,15 +194,13 @@ class OrganizationManager(BaseManager):
         :return: dict - The organization's details.
         :raises ValueError: If the organization does not exist.
         """
-        table = self.dynamodb.Table(self.org_table_name)
-        response = table.get_item(Key={'id': org_id})
+        response = self.org_table.get_item(Key={'id': org_id})
         org = response.get('Item')
         if not org:
             raise ValueError(f"Organization not found.")
         return org
 
     def get_organization(self, org_id):
-        print (f'---------org_id {org_id}')
         try:
             response = self.org_table.get_item(Key={'id': org_id})
             return response.get('Item')
@@ -222,8 +216,7 @@ class OrganizationManager(BaseManager):
         :return: str - The organization ID.
         :raises ValueError: If the organization with the given name is not found.
         """
-        table = self.dynamodb.Table(self.org_table_name)
-        response = table.scan(
+        response = self.org_table.scan(
             FilterExpression=Attr('org_name').eq(org_name)
         )
 
@@ -240,7 +233,6 @@ class OrganizationManager(BaseManager):
         return self.updater.update_organization(org_id, user_id, updates)
 
     def update_organization_old(self, org_id, org_name=None):
-        table = self.dynamodb.Table(self.org_table_name)
         update_expression = "SET updated_at = :updated_at"
         expression_attribute_values = {':updated_at': str(datetime.utcnow())}
 
@@ -249,69 +241,77 @@ class OrganizationManager(BaseManager):
             expression_attribute_values[':org_name'] = org_name
 
         try:
-            table.update_item(
-                Key={'org_id': org_id},
+            self.org_table.update_item(
+                Key={'id': org_id},
                 UpdateExpression=update_expression,
                 ExpressionAttributeValues=expression_attribute_values,
                 ReturnValues="UPDATED_NEW"
             )
         except ClientError as e:
-            print(e.response['Error']['Message'])
+            logger.error(f"ClientError: {e.response['Error']['Message']}")
+            # Re-raise the error to be caught by the error handler in app.py
+            raise
 
     def delete_organization(self, org_id):
-        table = self.dynamodb.Table(self.org_table_name)
         try:
-            table.delete_item(Key={'org_id': org_id})
+            self.org_table.delete_item(Key={'id': org_id})
         except ClientError as e:
-            print(e.response['Error']['Message'])
+            logger.error(f"ClientError: {e.response['Error']['Message']}")
+            # Re-raise the error to be caught by the error handler in app.py
+            raise
 
     def add_user_to_organization(self, org_id, user_id):
-        table = self.dynamodb.Table(self.org_table_name)
         try:
-            table.update_item(
-                Key={'org_id': org_id},
+            self.org_table.update_item(
+                Key={'id': org_id},
                 UpdateExpression="ADD users :user_id",
                 ExpressionAttributeValues={':user_id': {user_id}},
                 ReturnValues="UPDATED_NEW"
             )
         except ClientError as e:
-            print(e.response['Error']['Message'])
+            logger.error(f"ClientError: {e.response['Error']['Message']}")
+            # Re-raise the error to be caught by the error handler in app.py
+            raise
 
     def remove_user_from_organization(self, org_id, user_id):
-        table = self.dynamodb.Table(self.org_table_name)
         try:
-            table.update_item(
-                Key={'org_id': org_id},
-                UpdateExpression="DELETE users :user_id",
-                ExpressionAttributeValues={':user_id': {user_id}},
+            self.org_table.update_item(
+                Key={'id': org_id},  # Assuming 'id' is the primary key for the organization table
+                UpdateExpression="DELETE #users_attr :user_id",
+                ExpressionAttributeNames={"#users_attr": "users"},  # Escaping 'users'
+                ExpressionAttributeValues={':user_id': {user_id}},  # Ensure user_id is in a set
                 ReturnValues="UPDATED_NEW"
             )
         except ClientError as e:
-            print(e.response['Error']['Message'])
+            logger.error(f"ClientError: {e.response['Error']['Message']}")
+            # Re-raise the error to be caught by the error handler in app.py
+            raise
 
     def add_group_to_organization(self, org_id, group_id):
-        table = self.dynamodb.Table(self.groups_table_name)
         try:
-            table.update_item(
+            self.groups_table.update_item(
                 Key={'org_id': org_id},
                 UpdateExpression="ADD groups :group_id",
                 ExpressionAttributeValues={':group_id': {group_id}},
                 ReturnValues="UPDATED_NEW"
             )
         except ClientError as e:
-            print(e.response['Error']['Message'])
+            logger.error(f"ClientError: {e.response['Error']['Message']}")
+            # Re-raise the error to be caught by the error handler in app.py
+            raise
 
     def remove_group_from_organization(self, org_id, group_id):
-        table = self.dynamodb.Table(self.groups_table_name)
         try:
-            table.update_item(
+            self.groups_table.update_item(
                 Key={'org_id': org_id},
                 UpdateExpression="DELETE groups :group_id",
                 ExpressionAttributeValues={':group_id': {group_id}},
                 ReturnValues="UPDATED_NEW"
             )
         except ClientError as e:
-            print(e.response['Error']['Message'])
+            logger.error(f"ClientError: {e.response['Error']['Message']}")
+            # Re-raise the error to be caught by the error handler in app.py
+            raise
 
     def list_groups_in_organization(self, org_id):
         try:
@@ -320,18 +320,17 @@ class OrganizationManager(BaseManager):
             )
             return response.get('Items', [])
         except ClientError as e:
-            print(f"Error listing groups in organization: {e}")
+            logger.error(f"Error listing groups in organization: {e}")
             return []
 
     def add_admins(self, org_id, admin_user_ids):
-        table = self.dynamodb.Table(self.org_table_name)
         try:
-            response = table.get_item(Key={'org_id': org_id})
+            response = self.org_table.get_item(Key={'id': org_id})
             current_admins = set(response['Item'].get('admins', []))
             new_admins = current_admins.union(set(admin_user_ids))
 
-            table.update_item(
-                Key={'org_id': org_id},
+            self.org_table.update_item(
+                Key={'id': org_id},
                 UpdateExpression="SET admins = :admins, updated_at = :updated_at",
                 ExpressionAttributeValues={
                     ':admins': list(new_admins),
@@ -342,17 +341,18 @@ class OrganizationManager(BaseManager):
                 ReturnValues="UPDATED_NEW"
             )
         except ClientError as e:
-            print(e.response['Error']['Message'])
+            logger.error(f"ClientError: {e.response['Error']['Message']}")
+            # Re-raise the error to be caught by the error handler in app.py
+            raise
 
     def remove_admins(self, org_id, admin_user_ids):
-        table = self.dynamodb.Table(self.org_table_name)
         try:
-            response = table.get_item(Key={'org_id': org_id})
+            response = self.org_table.get_item(Key={'id': org_id})
             current_admins = response['Item'].get('admins', [])
             updated_admins = [admin for admin in current_admins if admin not in admin_user_ids]
 
-            table.update_item(
-                Key={'org_id': org_id},
+            self.org_table.update_item(
+                Key={'id': org_id},
                 UpdateExpression="SET admins = :admins, updated_at = :updated_at",
                 ExpressionAttributeValues={
                     ':admins': updated_admins,
@@ -361,16 +361,119 @@ class OrganizationManager(BaseManager):
                 ReturnValues="UPDATED_NEW"
             )
         except ClientError as e:
-            print(e.response['Error']['Message'])
+            logger.error(f"ClientError: {e.response['Error']['Message']}")
+            # Re-raise the error to be caught by the error handler in app.py
+            raise
+
+    def promote_to_admin(self, user_id: str, org_id: str):
+        """
+        Promotes a user to admin status within the specified organization.
+        """
+        # Fetch organization details
+        organization = self.get_organization_by_id(org_id)
+        
+        if not organization:
+            raise ValueError("Organization does not exist")
+
+        org_name = organization.get('org_name', 'Unknown organization')
+
+        # Fetch user details
+        user = self.user_manager.get_user_details_by_id(user_id)
+        if not user:
+            raise ValueError("User does not exist")
+        
+        username = user.get('username', 'Unknown user')
+
+        # Check if the user is a member of the organization
+        if user_id not in organization.get('users', []):
+            raise ValueError(f"User '{username}' does not belong to the organization '{org_name}'")
+
+        # Check if the user is already an admin
+        if user_id in organization.get('admins', []):
+            raise ValueError(f"User '{username}' is already an admin in organization '{org_name}'")
+
+        # Use the existing add_admins function to promote the user
+        self.add_admins(org_id, [user_id])
+
+        return f"User '{username}' promoted to admin in organization '{org_name}'"
+
+    def demote_from_admin(self, user_id: str, org_id: str):
+        """
+        Demotes a user from admin status within the specified organization.
+        """
+        # Fetch organization details
+        organization = self.get_organization_by_id(org_id)
+
+        if not organization:
+            raise ValueError("Organization does not exist")
+
+        org_name = organization.get('org_name', 'Unknown organization')
+
+        # Fetch user details
+        user = self.user_manager.get_user_details_by_id(user_id)
+        if not user:
+            raise ValueError("User does not exist")
+        
+        username = user.get('username', 'Unknown user')
+
+        # Check if the user is an admin
+        if user_id not in organization.get('admins', []):
+            raise ValueError(f"User '{username}' is not an admin in organization '{org_name}'")
+
+        # Ensure at least one admin remains in the organization
+        if len(organization["admins"]) == 1 and user_id in organization["admins"]:
+            raise ValueError(f"Cannot demote the last admin of organization '{org_name}'")
+
+        # Use the existing remove_admins function to demote the user
+        self.remove_admins(org_id, [user_id])
+
+        return f"User '{username}' demoted from admin in organization '{org_name}'"
 
     def list_organizations(self):
-        table = self.dynamodb.Table(self.org_table_name)
         try:
-            response = table.scan()
+            response = self.org_table.scan()
             return response.get('Items', [])
         except ClientError as e:
-            print(e.response['Error']['Message'])
+            logger.error(f"ClientError: {e.response['Error']['Message']}")
             return []
+
+    def list_users_in_organization(self, org_id, requester_user_id):
+        """
+        Lists all users within the organization by their details.
+        """
+        # Check if org_id is provided
+        if not org_id:
+            raise ValueError("Organization ID is required.")
+        
+        # Fetch organization details
+        organization = self.get_organization_by_id(org_id)
+
+        # Check if organization exists
+        if not organization:
+            raise ValueError("Organization not found.")
+
+        # Check if the requesting user is part of the organization or an admin
+        if requester_user_id not in organization.get('users', []) and requester_user_id not in organization.get('admins', []):
+            raise PermissionError("User is not authorized to view this organization's users.")
+
+        user_ids = organization.get('users', [])
+        users = []
+
+        # Edge case: No users in the organization
+        if not user_ids:
+            return []
+
+        # Retrieve details for each user
+        for user_id in user_ids:
+            user_response = self.user_manager.get_user_details_by_id(user_id)
+            if user_response:
+                users.append({
+                    'id': user_response.get('id'),
+                    'username': user_response.get('username'),
+                    'email': user_response.get('email')
+                })
+
+        return users
 
     def _check_free_plan_limits(self, org_id):
         """Check if the organization under the free plan has reached its user or group limits."""
@@ -398,16 +501,17 @@ class OrganizationManager(BaseManager):
         self._check_free_plan_limits(org_id)
         
         # Existing logic to add a user
-        table = self.dynamodb.Table(self.org_table_name)
         try:
-            table.update_item(
-                Key={'org_id': org_id},
+            self.org_table.update_item(
+                Key={'id': org_id},
                 UpdateExpression="ADD users :user_id",
                 ExpressionAttributeValues={':user_id': {user_id}},
                 ReturnValues="UPDATED_NEW"
             )
         except ClientError as e:
-            print(e.response['Error']['Message'])
+            logger.error(f"ClientError: {e.response['Error']['Message']}")
+            # Re-raise the error to be caught by the error handler in app.py
+            raise
 
     def invite_users(self, org_id, inviter_id, user_ids, invite_type):
         return self.invitation_manager.invite_users(

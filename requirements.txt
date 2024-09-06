@@ -6,3 +6,4 @@ scipy==1.14.0
 requests==2.32.3
 pytest==8.3.2  # Remove if not running tests in production
 joblib==1.4.2
+Flask-HTTPAuth==4.8.0

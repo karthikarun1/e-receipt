@@ -2,4 +2,9 @@ venv/
 *wip*
 *tmp*
 *txt
+*aws*
+aws*
+.env
+.env.*
+*.py.*
 __pycache__/

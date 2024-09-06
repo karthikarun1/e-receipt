@@ -1,4 +1,8 @@
-__pycache__
-*.pyc
-*.pyo
-.git
+# Ignore all files
+**
+
+# Except these
+!app.py
+!requirements.txt
+!Dockerfile
+!Procfile

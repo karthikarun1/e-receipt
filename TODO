@@ -20,3 +20,7 @@
 - Create full API documentation (using swagger etc.)
 - Add comprehensive unit tests
 - Advanced model version management (warning users of model_name and version colliding, automatic version increment etc.)
+- Mark some models as public so that anyone can search for it and use it.
+- Add comments to model
+- List model metadata or details of model
+- Log when was the last time there was activity in an organization

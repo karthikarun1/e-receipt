@@ -33,6 +33,7 @@ from superuser_management import register_superuser_command
 from storage import MlModelStorage
 from subscription_management import SubscriptionManager
 from user_management import UserManager
+from  remove_user_from_org import UserRemovalManager
 
 # load environment variables
 from config_loader import load_environment
@@ -57,6 +58,7 @@ storage = MlModelStorage(metadata_store=metadata_store)
 
 user_manager = UserManager(dynamodb_resource, table_prefix)
 org_manager = OrganizationManager(dynamodb_resource, table_prefix)
+user_removal_manager = UserRemovalManager(dynamodb_resource, table_prefix)
 
 # Create a prometheus metric
 registry = CollectorRegistry()
@@ -269,6 +271,7 @@ def update_organization(current_user):
         user_id=current_user['id'],  # Pass the current user's ID
         updates=updates
     )
+    updated_org = utils.convert_sets_to_lists(updated_org)
 
     return jsonify({'message': 'Organization updated successfully', 'organization': updated_org}), 200
 
@@ -340,15 +343,30 @@ def process_invite():
     expires_at = unquote(data.get('expires_at'))
     signature = data.get('signature')
 
-    print (f'------invitation id {invitation_id}')
-    print (f'------expires at {expires_at}')
-    print (f'------ signature {signature}')
-
     if not invitation_id or not expires_at or not signature:
         return jsonify({"error": "Invitation ID, expiration time, and signature are required."}), 400
 
     # Process the invitation
     result = org_manager.process_invitation(invitation_id, expires_at, signature)
+
+    return jsonify(result), 200
+
+
+@app.route('/organization/remove_user', methods=['POST'])
+@token_required
+def remove_user_from_org():
+    # Get request data using get_request_data() helper
+    data = get_request_data()
+    admin_id = data.get('admin_id')
+    org_id = data.get('org_id')
+    username_or_email = data.get('username_or_email')
+
+    # Check for missing required parameters
+    if not admin_id or not org_id or not username_or_email:
+        return jsonify({"error": "Missing required parameters: admin_id, org_id, username_or_email"}), 400
+
+    # Call the user removal function
+    result = user_removal_manager.remove_user(admin_id, org_id, username_or_email)
 
     return jsonify(result), 200
 
@@ -360,6 +378,7 @@ def list_user_organizations(current_user):
     user_id = current_user['id']
 
     # Fetch organizations the user belongs to
+    print(dir(org_manager))
     organizations = org_manager.get_user_organizations(user_id)
 
     if not organizations:
@@ -374,6 +393,7 @@ def list_user_organizations(current_user):
 @superuser_required
 def list_all_organizations(current_user):
     organizations = org_manager.get_all_organizations()
+    organizations = utils.convert_sets_to_lists(organizations)
     return jsonify({"organizations": organizations}), 200
 
 
@@ -1195,7 +1215,42 @@ def verify_email():
         return bad_request('Verification failed or code expired')
 
 
-# Metrics and log collection
+@app.route('/organization/<org_id>/promote_admin', methods=['POST'])
+@token_required  # Ensure the user is authenticated
+def promote_to_admin(current_user, org_id):
+    data = get_request_data()  # Using get_request_data to parse the request body
+    user_id = data.get('user_id')
+    
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+
+    message = org_manager.promote_to_admin(user_id, org_id)
+    return jsonify({"message": message}), 200
+
+
+@app.route('/organization/<org_id>/demote_admin', methods=['POST'])
+@token_required  # Ensure the user is authenticated
+def demote_from_admin(current_user, org_id):
+    data = get_request_data()  # Using get_request_data to parse the request body
+    user_id = data.get('user_id')
+    
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+
+    message = org_manager.demote_from_admin(user_id, org_id)
+    return jsonify({"message": message}), 200
+
+
+@app.route('/organization/<org_id>/users', methods=['GET'])
+@token_required
+def list_users_in_organization(current_user, org_id):
+    # Retrieve the list of users in the organization
+    users = org_manager.list_users_in_organization(org_id, current_user['id'])
+
+    if not users:
+        return jsonify({"message": "No users found in this organization."}), 404
+
+    return jsonify({"users": users}), 200
 
 
 @app.before_request

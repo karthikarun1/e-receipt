@@ -29,6 +29,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from invite_type import InviteType
 from metadata_store import MetadataStore
 from org_management import OrganizationManager
+from role_management import RoleManager, Role  # Import the Role enum
 from superuser_management import register_superuser_command
 from storage import MlModelStorage
 from subscription_management import SubscriptionManager
@@ -59,6 +60,7 @@ storage = MlModelStorage(metadata_store=metadata_store)
 user_manager = UserManager(dynamodb_resource, table_prefix)
 org_manager = OrganizationManager(dynamodb_resource, table_prefix)
 user_removal_manager = UserRemovalManager(dynamodb_resource, table_prefix)
+role_manager = RoleManager(dynamodb_resource, table_prefix)
 
 # Create a prometheus metric
 registry = CollectorRegistry()
@@ -205,7 +207,6 @@ def token_required(f):
         # Check if the user exists in the database
         user = user_manager.get_user_details_by_id(user_id)
         if not user:
-            #return jsonify({'message': 'User not found!'}), 401
             return jsonify({'message': 'Invalid username or email or password!'}), 401
 
         return f(user, *args, **kwargs)
@@ -232,18 +233,43 @@ def protected_resource(user):
     return jsonify({'message': f'Welcome, {user["username"]}! This is a protected resource.'})
 
 
+@app.route('/change_role', methods=['POST'])
+@token_required
+def change_user_role_endpoint(current_user):
+    # Extract required fields from the request data using get_request_data
+    print (f'------current user is {current_user}')
+    data = get_request_data()
+
+    org_id = data['org_id']
+    user_id = data['user_id']
+    new_role = data['new_role']
+    
+    print (f'org_id: {org_id}, user_id: {user_id}, new_role: {new_role}')
+
+    # Convert the new role to the appropriate enum type
+    new_role_enum = Role(new_role)
+
+    # Call the change_user_role method from RoleManager
+    result = role_manager.change_user_role(org_id, user_id, current_user['id'], new_role_enum)
+
+    # Return success response
+    return jsonify({"message": result}), 200
+
+
 @app.route('/create_organization', methods=['POST'])
 @token_required
 def create_organization(current_user):
     data = get_request_data()
 
     org_name = data.get('org_name')
+    description = data.get('description')
     if not org_name:
         return jsonify({'error': 'Organization name is required'}), 400
 
     # Call the create_organization method
     organization = org_manager.create_organization(
         org_name=org_name,
+        description=description,
         creator_user_id=current_user['id']
     )
 
@@ -300,15 +326,23 @@ def invite_users_to_organization_by_email(current_user):
 
     org_id = data.get('org_id')
     emails = data.get('emails')
+    role_str = data.get('role').lower()  # Role as a string from request
 
     if not org_id or not emails:
         return jsonify({"error": "Organization ID and emails are required."}), 400
 
-    invite_type = InviteType.ORGANIZATION  # Set the invite type as ORGANIZATION
-    # Invite users by their email addresses
-    invited_users = org_manager.invite_users(org_id, current_user['id'], emails, invite_type)
+    # Validate role if provided
+    if role_str:
+        allowed_roles = [r.name.lower() for r in Role]
+        if role_str not in allowed_roles:
+            return jsonify({"error": f"Invalid role: {role_str}. Allowed roles are: {', '.join(allowed_roles)}."}), 400
 
-    if not invited_users:
+    invite_type = InviteType.ORGANIZATION  # Set the invite type as ORGANIZATION
+
+    # Invite users by their email addresses with the optional role
+    invited_users = org_manager.invite_users(org_id, current_user['id'], emails, invite_type, role_str)
+
+    if not invited_users: 
         return jsonify({"message": "No new invitations were sent. The specified emails might already belong to members."}), 200
 
     return jsonify({"message": "Invitations sent successfully.", "invited_users": invited_users}), 200
@@ -354,10 +388,10 @@ def process_invite():
 
 @app.route('/organization/remove_user', methods=['POST'])
 @token_required
-def remove_user_from_org():
+def remove_user_from_org(current_user):
     # Get request data using get_request_data() helper
     data = get_request_data()
-    admin_id = data.get('admin_id')
+    admin_id = current_user['id']
     org_id = data.get('org_id')
     username_or_email = data.get('username_or_email')
 
@@ -1213,32 +1247,6 @@ def verify_email():
         return jsonify({'message': 'Email verified successfully'}), 200
     else:
         return bad_request('Verification failed or code expired')
-
-
-@app.route('/organization/<org_id>/promote_admin', methods=['POST'])
-@token_required  # Ensure the user is authenticated
-def promote_to_admin(current_user, org_id):
-    data = get_request_data()  # Using get_request_data to parse the request body
-    user_id = data.get('user_id')
-    
-    if not user_id:
-        return jsonify({"error": "user_id is required"}), 400
-
-    message = org_manager.promote_to_admin(user_id, org_id)
-    return jsonify({"message": message}), 200
-
-
-@app.route('/organization/<org_id>/demote_admin', methods=['POST'])
-@token_required  # Ensure the user is authenticated
-def demote_from_admin(current_user, org_id):
-    data = get_request_data()  # Using get_request_data to parse the request body
-    user_id = data.get('user_id')
-    
-    if not user_id:
-        return jsonify({"error": "user_id is required"}), 400
-
-    message = org_manager.demote_from_admin(user_id, org_id)
-    return jsonify({"message": message}), 200
 
 
 @app.route('/organization/<org_id>/users', methods=['GET'])

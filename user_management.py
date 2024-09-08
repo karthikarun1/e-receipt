@@ -1,6 +1,7 @@
 import bcrypt
 import jwt
 import hashlib
+import logging
 import os
 import uuid
 import time
@@ -23,6 +24,7 @@ load_environment()
 PASSWORD_RESET_TOKEN_VALIDITY_SECONDS = os.getenv('PASSWORD_RESET_TOKEN_VALIDITY_SECONDS')
 LOGIN_VALIDITY_SECONDS = os.getenv('LOGIN_VALIDITY_SECONDS')
 
+logger = logging.getLogger(__name__)
 
 class UserManager(BaseManager):
     def __init__(self, dynamodb, table_prefix):
@@ -485,10 +487,13 @@ class UserManager(BaseManager):
         """Retrieve a user's details."""
         try:
             response = self.users_table.get_item(Key={'id': user_id})
-            return response.get('Item', {})
+            user = response.get('Item', {})
+            if not user:
+                raise ValueError('No user found.')
+            return user
         except ClientError as e:
-            print(f"Error retrieving user: {e}")
-            return {}
+            logger.error(f"ClientError: {e.response['Error']['Message']}")
+            raise
 
     def get_user_details(self, username):
         """Retrieve a user's details by username."""
@@ -564,6 +569,7 @@ class UserManager(BaseManager):
 
     def login_user(self, identifier, password):
         """Authenticate a user by username or email and password."""
+        print ('-------calling login_user')
         try:
             # First, try to find the user by username
             response = self.users_table.query(

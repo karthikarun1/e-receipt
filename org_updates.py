@@ -1,17 +1,16 @@
-# org_updates.py
-
 from datetime import datetime
 from enum import Enum
+from subscription_management import SubscriptionPlanType
+from role_management import Role, Permission
 
-class SubscriptionPlanType(Enum):
-    FREE = "free"
-    PAID = "paid"
+
+_ALLOWED_KEYS  = {"org_name", "plan_type", "description"}
 
 class OrganizationUpdater:
-    def __init__(self, org_manager, user_manager, permissions_manager, dynamodb, table_name):
+    def __init__(self, org_manager, user_manager, role_manager, dynamodb, table_name):
         self.org_manager = org_manager
         self.user_manager = user_manager
-        self.permissions_manager = permissions_manager
+        self.role_manager = role_manager
         self.dynamodb = dynamodb
         self.table_name = table_name
 
@@ -23,19 +22,19 @@ class OrganizationUpdater:
         return self._apply_updates(org_id, update_expression, expression_values)
 
     def _check_permissions(self, org_id, user_id):
-        if not self.permissions_manager.is_user_admin_of_organization(org_id, user_id):
+        """Check if the user has the OrganizationAdmin or SuperAdmin role."""
+        if not self.role_manager.is_orgadmin_or_superadmin(org_id, user_id):
             raise PermissionError("You do not have permission to update this organization.")
 
     def _get_organization(self, org_id):
         return self.org_manager.get_organization_by_id(org_id)
 
     def _prepare_updates(self, org, user_id, updates):
-        allowed_keys = {"org_name", "plan_type", "admins", "description"}
         update_expression_parts = []
         expression_attribute_values = {':updated_at': str(datetime.utcnow())}
 
         for key, value in updates.items():
-            if key not in allowed_keys:
+            if key not in _ALLOWED_KEYS:
                 raise ValueError(f"Invalid key provided: {key}")
 
             if key == "org_name":
@@ -80,6 +79,7 @@ class OrganizationUpdater:
             raise ValueError(f"An organization with the name '{org_name}' already exists.")
 
     def _validate_admins(self, new_admins, org, user_id):
+        """Validate and assign new admins using RoleManager."""
         if not isinstance(new_admins, list):
             raise ValueError("Admins must be provided as a list of user IDs.")
 
@@ -89,9 +89,12 @@ class OrganizationUpdater:
         if user_id not in new_admins_set and len(new_admins_set) < len(current_admins):
             raise ValueError("You cannot remove yourself as an admin unless there is at least one other admin.")
 
+        # Use RoleManager to assign the OrganizationAdmin role to new admins
         for admin_id in new_admins_set:
             if not self.user_manager.user_exists(admin_id):
                 raise ValueError(f"Invalid admin ID: {admin_id}")
+            if admin_id not in current_admins:
+                self.role_manager.change_user_role(org['id'], admin_id, user_id, Role.ORGANIZATION_ADMIN)
 
     def _validate_plan_type_change(self, org, updates):
         """

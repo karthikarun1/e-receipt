@@ -14,6 +14,7 @@ MAX_PASSWORD_LENGTH = int(os.getenv('MAX_PASSWORD_LENGTH', 128))
 MIN_PASSWORD_LENGTH = int(os.getenv('MIN_PASSWORD_LENGTH', 8))
 MAX_FILE_NAME_LENGTH = int(os.getenv('MAX_FILE_NAME_LENGTH', 255))
 MAX_ORG_NAME_LENGTH = int(os.getenv('MAX_ORG_NAME_LENGTH', 100))
+MIN_ORG_NAME_LENGTH = int(os.getenv('MIN_ORG_NAME_LENGTH', 3))
 MAX_GROUP_NAME_LENGTH = int(os.getenv('MAX_GROUP_NAME_LENGTH', 50))
 MAX_SEARCH_QUERY_LENGTH = int(os.getenv('MAX_SEARCH_QUERY_LENGTH', 255))
 MAX_URL_LENGTH = int(os.getenv('MAX_URL_LENGTH', 2083))
@@ -64,13 +65,29 @@ class InputValidator:
         return email
 
     @staticmethod
+    def validate_emails(emails):
+        for email in emails:
+            InputValidator.validate_email(email)
+        return emails
+
+    @staticmethod
     def validate_password(password):
         if len(password) < MIN_PASSWORD_LENGTH or len(password) > MAX_PASSWORD_LENGTH:
             raise ValueError(f"Password must be between {MIN_PASSWORD_LENGTH} and {MAX_PASSWORD_LENGTH} characters.")
         return password
 
     @staticmethod
+    def validate_org_name(org_name):
+        if len(org_name) < MIN_ORG_NAME_LENGTH:
+            raise ValueError(f"Organization name should be a minimum of {MIN_ORG_NAME_LENGTH} characters.")
+        if len(org_name) > MAX_ORG_NAME_LENGTH:
+            raise ValueError(f"Organization name exceeds the maximum length of {MAX_ORG_NAME_LENGTH} characters.")
+        return org_name
+
+    @staticmethod
     def validate_organization_name(org_name):
+        if len(org_name) < MIN_ORG_NAME_LENGTH:
+            raise ValueError(f"Organization name should be a minimum of {MIN_ORG_NAME_LENGTH} characters.")
         if len(org_name) > MAX_ORG_NAME_LENGTH:
             raise ValueError(f"Organization name exceeds the maximum length of {MAX_ORG_NAME_LENGTH} characters.")
         return org_name

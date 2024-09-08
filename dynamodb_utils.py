@@ -322,21 +322,41 @@ def create_reset_tokens_table(dynamodb_resource, prefix):
 
 
 def create_invites_table(dynamodb_resource, prefix):
+    """
+    Create the Invites table with a Global Secondary Index (GSI) on email and org_id.
+    """
     invites_table = dynamodb_resource.create_table(
         TableName=f"{prefix}_Invites",
         KeySchema=[
             {'AttributeName': 'id', 'KeyType': 'HASH'}  # Partition key
         ],
         AttributeDefinitions=[
-            {'AttributeName': 'id', 'AttributeType': 'S'}
+            {'AttributeName': 'id', 'AttributeType': 'S'},
+            {'AttributeName': 'email', 'AttributeType': 'S'},  # Attribute for GSI
+            {'AttributeName': 'org_id', 'AttributeType': 'S'}  # Attribute for GSI
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                'IndexName': 'email-org_id-index',
+                'KeySchema': [
+                    {'AttributeName': 'email', 'KeyType': 'HASH'},  # Partition key for GSI
+                    {'AttributeName': 'org_id', 'KeyType': 'RANGE'}  # Sort key for GSI
+                ],
+                'Projection': {
+                    'ProjectionType': 'ALL'  # Return all attributes
+                },
+                'ProvisionedThroughput': {
+                    'ReadCapacityUnits': 5,
+                    'WriteCapacityUnits': 5
+                }
+            }
         ],
         ProvisionedThroughput={
             'ReadCapacityUnits': 5,
             'WriteCapacityUnits': 5
         }
     )
-    invites_table.wait_until_exists()
-    print(f"Table {prefix}_Invites created successfully.")
+    return invites_table
 
 
 def create_all_tables(dynamodb_resource, prefix):
@@ -486,8 +506,8 @@ if __name__ == "__main__":
     dynamodb_resource = boto3.resource('dynamodb', endpoint_url='http://localhost:8000', region_name='us-east-1')
     dynamodb_client = boto3.client('dynamodb', endpoint_url='http://localhost:8000', region_name='us-east-1')
 
-    drop_table(dynamodb_client, 'Dev_Organizations')
-    create_organization_table(dynamodb_resource, table_prefix)
+    #drop_table(dynamodb_client, 'Dev_Organizations')
+    #create_organization_table(dynamodb_resource, table_prefix)
 
     drop_table(dynamodb_client, 'Dev_Invites')
     create_invites_table(dynamodb_resource, table_prefix)

@@ -25,7 +25,7 @@ class InvitationManager(BaseManager):
 
     def invite_users(self, org_id, inviter_id, emails, invite_type, role=None):
         """
-        Invite users to an organization via email.
+        Invite users to an organization via email, with checks for existing pending or expired invitations.
 
         Args:
             org_id (str): The organization ID.
@@ -57,10 +57,22 @@ class InvitationManager(BaseManager):
                 already_in_org.append(email)
                 continue
 
-            # Process invitation for users not part of the organization
-            invited_user = self._process_email_invitations(organization, [email], invite_type, role)
-            if invited_user:
-                invited_users.append(email)
+            # Check if there is an existing invitation for this email
+            existing_invite = self._get_existing_invite(email, org_id)
+
+            if existing_invite:
+                # If the invite exists but is expired, delete the old invite and create a new one
+                if self._is_invite_expired(existing_invite):
+                    self._delete_invite(existing_invite['id'])
+                    self._create_and_send_invitation(organization, {'email': email}, invite_type, role)
+                else:
+                    # Resend the existing invite if it's still valid
+                    self._resend_existing_invite(existing_invite, organization)
+            else:
+                # Create a new invite if none exists
+                self._create_and_send_invitation(organization, {'email': email}, invite_type, role)
+
+            invited_users.append(email)
 
         # Prepare the response summary
         response_message = {
@@ -74,6 +86,45 @@ class InvitationManager(BaseManager):
             response_message["message"] = "No new users were invited."
 
         return response_message
+
+    def _get_existing_invite(self, email, org_id):
+        """
+        Retrieve an existing invite for the given email and organization, if one exists.
+        """
+        response = self.invites_table.query(
+            IndexName='email-org_id-index',  # Assuming you have a composite index on email and org_id
+            KeyConditionExpression='email = :email AND org_id = :org_id',
+            ExpressionAttributeValues={
+                ':email': email,
+                ':org_id': org_id
+            }
+        )
+        items = response.get('Items', [])
+        return items[0] if items else None
+
+    def _is_invite_expired(self, invite):
+        """
+        Check if an existing invite has expired.
+        """
+        expires_at = datetime.fromisoformat(invite['expires_at'])
+        return datetime.utcnow() > expires_at
+
+    def _delete_invite(self, invite_id):
+        """
+        Delete an expired invite from the invites table.
+        """
+        self.invites_table.delete_item(Key={'id': invite_id})
+
+    def _resend_existing_invite(self, invite, organization):
+        """
+        Resend an existing invite email without creating a new invite.
+        """
+        invite_link = self.email_util.generate_secure_link(
+            base_url=f"{os.getenv('BASE_URL')}/invite",
+            params={"invitation_id": invite['id'], "expires_at": invite['expires_at']},
+            expiration_minutes=int(ORG_INVITE_EMAIL_VALID_MINUTES)
+        )
+        self.email_util.send_invite_email(invite['email'], organization['org_name'], invite_link)
 
     def _get_organization_and_check_inviter(self, org_id, inviter_id):
         """

@@ -8,6 +8,6 @@ curl -X POST http://localhost:5000/organization/invite_by_emails \
 -H "Authorization: Bearer $token" \
 -d "{
   \"org_id\": \"${org_id}\",
-  \"emails\": [\"$email1\", \"$email2\"],
-  \"role\": \"organization_admin\"
+  \"emails\": [\"$email1\"],
+  \"role\": \"contributor\"
 }"

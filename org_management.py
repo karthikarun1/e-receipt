@@ -427,7 +427,7 @@ class OrganizationManager(BaseManager):
             # Assign the default role to the user in the 'user_roles' structure (e.g., 'viewer')
             self.org_table.update_item(
                 Key={'id': org_id},
-                UpdateExpression="SET roles.#user_id = :default_role",
+                UpdateExpression="SET user_roles.#user_id = :default_role",
                 ExpressionAttributeNames={"#user_id": user_id},
                 ExpressionAttributeValues={':default_role': Role.VIEWER.value},  # Default role
                 ReturnValues="UPDATED_NEW"

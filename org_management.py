@@ -15,6 +15,7 @@ from role_management import RoleManager, Role, Permission
 from subscription_management import SubscriptionManager, SubscriptionPlanType
 from user_management import UserManager
 from org_updates import OrganizationUpdater
+from org_group_management import OrgGroupManager, OrgGroup
 
 # Load environment variables
 from config_loader import load_environment
@@ -30,6 +31,7 @@ class OrganizationManager(BaseManager):
         self.subscription_manager = SubscriptionManager(dynamodb, table_prefix)
         self.role_manager = RoleManager(dynamodb, table_prefix)
         self.user_manager = UserManager(dynamodb, table_prefix)
+        self.org_group_manager = OrgGroupManager(dynamodb, table_prefix)
         self.updater = OrganizationUpdater(
             self,
             self.user_manager,
@@ -75,47 +77,50 @@ class OrganizationManager(BaseManager):
             raise LookupError("An error occurred while retrieving user organizations.") from e
 
     def get_organization_details(self, org_id, user_id):
+        """
+        Fetch the details of an organization, including user roles, group roles, and permissions.
+        """
         try:
-            # Fetch the organization details
-            organization = self.get_organization(org_id)
+            # Step 1: Fetch the organization from the Organizations table
+            response = self.org_table.get_item(Key={'org_id': org_id})
+            org = response.get('Item')
 
-            if not organization:
-                raise LookupError("Organization not found.")
+            if not org:
+                raise ValueError(f"Organization with id {org_id} not found.")
+            
+            # Step 2: Get user's individual role in the organization (if applicable)
+            user_role = org.get('user_roles', {}).get(user_id)
+            
+            # Step 3: Fetch all groups for this organization
+            groups = self.org_group_manager.list_groups_in_organization(org_id, user_id)
 
-            # Check if the user is authorized to view the organization details
-            if not self._is_user_authorized(user_id, organization):
-                raise PermissionError("User is not authorized to view this organization's details.")
+            # Step 4: Check if the user belongs to any group and inherit the group's role
+            group_role = None
+            for group in groups:
+                if user_id in group['users']:
+                    group_role = group.get('role')
+                    break
 
-            # Fetch details of users
-            users = []
-            for org_user_id in list(organization.get('user_roles', {}).keys()):
-                user_response = self.users_table.get_item(Key={'id': org_user_id})
-                user = user_response.get('Item')
-                if user:
-                    users.append({
-                        'id': user['id'],
-                        'username': user['username'],
-                        'email': user['email']
-                    })
+            # Step 5: Combine user role and group role (if both exist, individual role takes precedence)
+            effective_role = user_role or group_role
 
-            # Fetch the roles from the separate 'user_roles' structure
-            roles = organization.get('user_roles', {})  # Assuming 'user_roles' is a separate dict in organization
-
-            organization_details = {
-                "organization_id": organization['id'],
-                "organization_name": organization['org_name'],
-                "plan_type": organization.get('plan_type', SubscriptionPlanType.FREE.value),
-                "created_at": organization['created_at'],
-                "updated_at": organization['updated_at'],
-                "users": users,
-                "user_roles": roles  # Include roles directly from the separate structure
+            # Step 6: Return organization details along with the effective role
+            org_details = {
+                'org_id': org_id,
+                'org_name': org['org_name'],
+                'description': org['description'],
+                'plan_type': org['plan_type'],
+                'created_at': org['created_at'],
+                'updated_at': org['updated_at'],
+                'effective_role': effective_role,  # User's effective role (individual or group)
+                'groups': groups  # List of groups in the organization
             }
 
-            return organization_details
+            return org_details
 
-        except ClientError as e:
-            logging.error(e)
-            raise LookupError("An error occurred while retrieving organization details.") from e
+        except Exception as e:
+            logger.error(f"Failed to get organization details for org_id {org_id}: {e}")
+            raise
 
     def _is_user_authorized(self, user_id, organization):
         """
@@ -141,38 +146,44 @@ class OrganizationManager(BaseManager):
         return roles.get(user_id, "member")
 
     def create_organization(self, org_name, description, creator_user_id):
-        """Creates a new organization and assigns the creator as SuperAdmin."""
+        """
+        Create a new organization and automatically assign the creator to a 'superadmin' group.
+        """
         try:
-            # Check if an organization with the same org_name already exists
-            response = self.org_table.scan(
-                FilterExpression="org_name = :org_name",
-                ExpressionAttributeValues={':org_name': org_name}
-            )
-            if response['Items']:
-                raise ValueError(f"An organization with the name '{org_name}' already exists.")
-
-            # Create the organization in the database
+            # Step 1: Create the organization
             org_id = str(uuid.uuid4())
             created_at = str(datetime.utcnow())
-            organization_data = {
+            org_data = {
                 'id': org_id,
                 'org_name': org_name,
+                'description': description,
+                'plan_type': SubscriptionPlanType.FREE.value,  # Using SubscriptionType enum
                 'created_at': created_at,
+                'created_by': creator_user_id,
                 'updated_at': created_at,
-                'description': description,  # Default description
-                'plan_type': SubscriptionPlanType.FREE.value,  # Default plan type
-                'user_roles': {
-                    creator_user_id: Role.SUPERADMIN.value  # Assign the creator as SuperAdmin
-                }
+                'user_roles': {}  # Will be phased out with group roles
             }
-            self.org_table.put_item(Item=organization_data)
+            
+            # Save organization to the Organizations table
+            self.org_table.put_item(Item=org_data)
 
-            logger.info(f"Organization '{org_name}' created with ID {org_id} by user {creator_user_id}")
+            # Step 2: Create a default 'Org Super Admins' group using enum
+            self.org_group_manager.create_group(org_id, OrgGroup.ORG_SUPERADMIN.value, creator_user_id, is_org_creation=True)
+            
+            # Step 3: Assign the 'superadmin' role to the group
+            # No need to do this as in org_group_manager.create_group we explicitly add
+            # Role.ORG_SUPERADMIN to the group that is created
+            #self.org_group_manager.assign_role_to_group(org_id, group_id, Role.ORG_SUPERADMIN, creator_user_id, is_org_creation=True)
+            
+            # Step 4: Add the creator to the 'Org Super Admins' group
+            # No need to do this as in org_group_manager.create_group we explicitly add the creator
+            # to the group
+            #self.org_group_manager.add_user_to_group(org_id, group_id, creator_user_id, creator_user_id)
 
             return org_id
-
+        
         except Exception as e:
-            logger.error(f"Error creating organization {org_name}: {str(e)}")
+            logger.error(f"Failed to create organization: {e}")
             raise
 
     def is_org_name_taken(self, org_name):

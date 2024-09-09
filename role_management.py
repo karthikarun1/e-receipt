@@ -8,8 +8,8 @@ from email_util import EmailUtil
 logger = logging.getLogger(__name__)
 
 class Role(Enum):
-    SUPERADMIN = 'superadmin'
-    ORGANIZATION_ADMIN = 'organization_admin'
+    ORG_SUPERADMIN = 'org_superadmin'
+    ORG_ADMIN = 'org_admin'
     CONTRIBUTOR = 'contributor'
     VIEWER = 'viewer'
 
@@ -20,7 +20,7 @@ class Permission(Enum):
     DOWNLOAD_MODEL = 'download_model'
     MANAGE_USERS = 'manage_users'
 
-_ADMIN_ROLES = [Role.ORGANIZATION_ADMIN, Role.SUPERADMIN]
+_ADMIN_ROLES = [Role.ORG_SUPERADMIN, Role.ORG_ADMIN]
 
 class RoleManager(BaseManager):
     def __init__(self, dynamodb, table_prefix):
@@ -87,10 +87,10 @@ class RoleManager(BaseManager):
         if requesting_user_role not in _ADMIN_ROLES:
             raise PermissionError("You don't have permissions to do role change.")
 
-        if ((current_role == Role.SUPERADMIN or new_role == Role.SUPERADMIN) and (requesting_user_role != Role.SUPERADMIN)):
+        if ((current_role == Role.ORG_SUPERADMIN or new_role == Role.ORG_SUPERADMIN) and (requesting_user_role != Role.ORG_SUPERADMIN)):
             raise PermissionError("Only SuperAdmins can promote to or demote from SuperAdmin.")
 
-        if ((current_role == Role.ORGANIZATION_ADMIN or new_role == Role.ORGANIZATION_ADMIN) and (requesting_user_role != Role.SUPERADMIN)):
+        if ((current_role == Role.ORG_ADMIN or new_role == Role.ORG_ADMIN) and (requesting_user_role != Role.ORG_SUPERADMIN)):
             raise PermissionError("Only SuperAdmins can promote to or demote from OrganizationAdmin.")
 
         if current_role == new_role:
@@ -117,20 +117,20 @@ class RoleManager(BaseManager):
         """
         Prevent demotion of the last SuperAdmin.
         """
-        if current_role == Role.SUPERADMIN and new_role != Role.SUPERADMIN:
-            if self._is_last_role(org_id, Role.SUPERADMIN):
+        if current_role == Role.ORG_SUPERADMIN and new_role != Role.ORG_SUPERADMIN:
+            if self._is_last_role(org_id, Role.ORG_SUPERADMIN):
                 raise ValueError("Cannot demote the last SuperAdmin.")
 
     def _prevent_last_orgadmin_demotion(self, org_id, current_role, new_role, requesting_user_role):
         """
         Prevent demotion of the last OrganizationAdmin, unless the action is performed by a SuperAdmin.
         """
-        if current_role == Role.ORGANIZATION_ADMIN and new_role != Role.ORGANIZATION_ADMIN:
+        if current_role == Role.ORG_ADMIN and new_role != Role.ORG_ADMIN:
             # Allow SuperAdmins to demote the last OrganizationAdmin
-            if requesting_user_role == Role.SUPERADMIN:
+            if requesting_user_role == Role.ORG_SUPERADMIN:
                 return  # SuperAdmins can demote the last OrganizationAdmin
 
-            if self._is_last_role(org_id, Role.ORGANIZATION_ADMIN):
+            if self._is_last_role(org_id, Role.ORG_ADMIN):
                 raise ValueError("Cannot demote the last OrganizationAdmin in the organization.")
 
     def _update_user_role(self, org_id, user_id, new_role):
@@ -153,7 +153,7 @@ class RoleManager(BaseManager):
         user_role = Role(self._get_user_role(org_id, user_id))
 
         # Check if the user's role is either OrganizationAdmin or SuperAdmin
-        return user_role in [Role.ORGANIZATION_ADMIN, Role.SUPERADMIN]
+        return user_role in [Role.ORG_ADMIN, Role.ORG_SUPERADMIN]
 
     def check_user_permission(self, org_id, user_id, permission: Permission):
         """
@@ -163,12 +163,12 @@ class RoleManager(BaseManager):
         role = self._get_user_role(org_id, user_id)
 
         # SuperAdmins have all permissions
-        if role == Role.SUPERADMIN:
+        if role == Role.ORG_SUPERADMIN:
             return True
 
         # Define role-based permissions
         role_permissions = {
-            Role.ORGANIZATION_ADMIN: [
+            Role.ORG_ADMIN: [
                 Permission.UPLOAD_MODEL,
                 Permission.LIST_MODELS,
                 Permission.REMOVE_MODEL,
@@ -203,7 +203,7 @@ class RoleManager(BaseManager):
             roles = organization.get('user_roles', {})
 
             # Return the role for the specific user within the organization
-            return roles.get(user_id, "member")  # Default to "member" if no role is found
+            return roles.get(user_id, Role.VIEWER)  # Default to "member" if no role is found
 
         except ClientError as e:
             logger.error(f"Error fetching user role for {user_id} in organization {org_id}: {e}")
@@ -246,8 +246,8 @@ class RoleManager(BaseManager):
 
     def _validate_role_change(self, current_role, new_role, org_id=None, requesting_user_id=None):
         """Validate if the role change is allowed."""
-        if current_role == Role.SUPERADMIN and new_role != Role.SUPERADMIN:
-            if self._is_last_role(org_id, Role.SUPERADMIN):
+        if current_role == Role.ORG_SUPERADMIN and new_role != Role.ORG_SUPERADMIN:
+            if self._is_last_role(org_id, Role.ORG_SUPERADMIN):
                 raise ValueError("Cannot demote the last SuperAdmin")
 
         # Check if the user is already in the target role
@@ -255,14 +255,14 @@ class RoleManager(BaseManager):
             raise ValueError(f"User is already a {new_role}")
 
         # Check if trying to demote the last OrganizationAdmin in the organization
-        if current_role == Role.ORGANIZATION_ADMIN and new_role != Role.ORGANIZATION_ADMIN:
-            if self._is_last_role(org_id, Role.ORGANIZATION_ADMIN):
+        if current_role == Role.ORG_ADMIN and new_role != Role.ORG_ADMIN:
+            if self._is_last_role(org_id, Role.ORG_ADMIN):
                 raise ValueError("Cannot demote the last OrganizationAdmin in the organization")
 
         # Ensure only SuperAdmins can change roles to/from SuperAdmin
-        if new_role == Role.SUPERADMIN or current_role == Role.SUPERADMIN:
+        if new_role == Role.ORG_SUPERADMIN or current_role == Role.ORG_SUPERADMIN:
             requesting_user_role = self._get_user_role(requesting_user_id)
-            if requesting_user_role != Role.SUPERADMIN:
+            if requesting_user_role != Role.ORG_SUPERADMIN:
                 raise PermissionError("Only SuperAdmins can promote or demote SuperAdmins")
 
 

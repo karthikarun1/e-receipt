@@ -183,24 +183,6 @@ def create_permissions_table(dynamodb_resource, prefix):
     print(f"Table {prefix}_Permissions created successfully.")
 
 
-def create_organization_table_old(dynamodb_resource, prefix):
-    organizations_table = dynamodb_resource.create_table(
-        TableName=f"{prefix}_Organizations",
-        KeySchema=[
-            {'AttributeName': 'id', 'KeyType': 'HASH'}  # Partition key
-        ],
-        AttributeDefinitions=[
-            {'AttributeName': 'id', 'AttributeType': 'S'}
-        ],
-        ProvisionedThroughput={
-            'ReadCapacityUnits': 5,
-            'WriteCapacityUnits': 5
-        }
-    )
-    organizations_table.wait_until_exists()
-    print(f"Table {prefix}_Organizations created successfully.")
-
-
 def create_organization_table(dynamodb_resource, prefix):
     table_name = f"{prefix}_Organizations"
     organizations_table = dynamodb_resource.create_table(
@@ -235,24 +217,45 @@ def create_organization_table(dynamodb_resource, prefix):
     organizations_table.wait_until_exists()
     print(f"Table {prefix}_Organizations created successfully.")
 
-
 def create_groups_table(dynamodb_resource, prefix):
-    groups_table = dynamodb_resource.create_table(
-        TableName=f"{prefix}_Groups",
-        KeySchema=[
-            {'AttributeName': 'id', 'KeyType': 'HASH'}  # Partition key
-        ],
-        AttributeDefinitions=[
-            {'AttributeName': 'id', 'AttributeType': 'S'}
-        ],
-        ProvisionedThroughput={
-            'ReadCapacityUnits': 5,
-            'WriteCapacityUnits': 5
-        }
-    )
-    groups_table.wait_until_exists()
-    print(f"Table {prefix}_Groups created successfully.")
+    try:
+        groups_table = dynamodb_resource.create_table(
+            TableName=f"{prefix}_Groups",
+            KeySchema=[
+                {'AttributeName': 'org_id', 'KeyType': 'HASH'},  # Partition key (Organization ID)
+                {'AttributeName': 'id', 'KeyType': 'RANGE'}  # Sort key (Group ID)
+            ],
+            AttributeDefinitions=[
+                {'AttributeName': 'org_id', 'AttributeType': 'S'},
+                {'AttributeName': 'id', 'AttributeType': 'S'}
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    'IndexName': 'OrgIndex',
+                    'KeySchema': [
+                        {'AttributeName': 'org_id', 'KeyType': 'HASH'}
+                    ],
+                    'Projection': {
+                        'ProjectionType': 'ALL'
+                    },
+                    'ProvisionedThroughput': {
+                        'ReadCapacityUnits': 5,
+                        'WriteCapacityUnits': 5
+                    }
+                }
+            ],
+            ProvisionedThroughput={
+                'ReadCapacityUnits': 5,
+                'WriteCapacityUnits': 5
+            }
+        )
+        groups_table.wait_until_exists()
+        print(f"Table {prefix}_Groups created successfully.")
+        return groups_table
 
+    except Exception as e:
+        print(f"Error creating {prefix}_Groups table: {e}")
+        raise
 
 def create_groups_membership_table(dynamodb_resource, prefix):
     user_group_membership_table = dynamodb_resource.create_table(
@@ -506,13 +509,18 @@ if __name__ == "__main__":
     dynamodb_resource = boto3.resource('dynamodb', endpoint_url='http://localhost:8000', region_name='us-east-1')
     dynamodb_client = boto3.client('dynamodb', endpoint_url='http://localhost:8000', region_name='us-east-1')
 
-    #drop_table(dynamodb_client, 'Dev_Organizations')
-    #create_organization_table(dynamodb_resource, table_prefix)
+    #drop_table(dynamodb_client, 'Dev_Invites')
+    #create_invites_table(dynamodb_resource, table_prefix)
 
-    drop_table(dynamodb_client, 'Dev_Invites')
-    create_invites_table(dynamodb_resource, table_prefix)
+    drop_table(dynamodb_client, 'Dev_Organizations')
+    create_organization_table(dynamodb_resource, table_prefix)
 
+    drop_table(dynamodb_client, 'Dev_Groups')
+    create_groups_table(dynamodb_resource, table_prefix)
+
+    '''
     are_you_sure = input('Are you sure you want to drop and recreate all tables? (y/n):')
     if are_you_sure.lower() in ('y', 'yes'):
         drop_all_tables(dynamodb_client)
         create_all_tables(dynamodb_resource, table_prefix)
+    '''

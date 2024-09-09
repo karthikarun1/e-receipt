@@ -284,6 +284,29 @@ class OrganizationManager(BaseManager):
             # Re-raise the error to be caught by the error handler in app.py
             raise
 
+    def get_users_with_roles(self, requesting_user_id, org_id):
+        try:
+            response = self.org_table.get_item(Key={'id': org_id})
+            organization = response.get('Item')
+            if not organization:
+                raise ValueError("Organization not found.")
+            
+            roles = organization.get('user_roles', {})
+            user_ids = list(roles.keys())
+            if requesting_user_id not in user_ids:
+                raise PermissionError("You don't have permission to view this org.")
+
+            user_with_roles = {}
+            for user_id, role in roles.items():
+                user = self.user_manager.get_user_details_by_id(user_id)
+                username = user['username']
+                key = f'{user_id} - {username}'
+                user_with_roles[key] = role
+            return user_with_roles
+        except Exception as e:
+            logger.error(f"Error retrieving users for organization: {str(e)}")
+            raise
+
     def remove_user_from_organization(self, org_id, user_id):
         """
         Removes a user from the organization and removes their role from the 'user_roles' structure.

@@ -206,6 +206,7 @@ def token_required(f):
 
         # Check if the user exists in the database
         user = user_manager.get_user_details_by_id(user_id)
+        print (f'----logged in user is {user}')
         if not user:
             return jsonify({'message': 'Invalid username or email or password!'}), 401
 
@@ -242,12 +243,12 @@ def change_user_role_endpoint(current_user):
 
     org_id = data['org_id']
     user_id = data['user_id']
-    new_role = data['new_role']
+    new_role_str = data['new_role']
     
-    print (f'org_id: {org_id}, user_id: {user_id}, new_role: {new_role}')
-
     # Convert the new role to the appropriate enum type
-    new_role_enum = Role(new_role)
+    # This will automatically do sanity check to make sure
+    # that the new role is a valid role or not
+    new_role_enum = Role(new_role_str)
 
     # Call the change_user_role method from RoleManager
     result = role_manager.change_user_role(org_id, user_id, current_user['id'], new_role_enum)
@@ -367,6 +368,17 @@ def invite_users_to_organization(current_user):
         return jsonify({"message": "No new invitations were sent. The specified users might already be members."}), 200
 
     return jsonify({"message": "Invitations sent successfully.", "invited_users": invited_users}), 200
+
+
+@app.route('/organization/<org_id>/users', methods=['GET'])
+@token_required
+def get_users_with_roles(user, org_id):
+    users_with_roles = org_manager.get_users_with_roles(user['id'], org_id)
+    
+    if not users_with_roles:
+        return jsonify({"message": "No users found for this organization."}), 404
+    
+    return jsonify(users_with_roles), 200
 
 
 @app.route('/invite', methods=['GET'])

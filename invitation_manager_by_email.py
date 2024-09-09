@@ -8,6 +8,8 @@ from botocore.exceptions import ClientError
 from urllib.parse import unquote
 
 from base_management import BaseManager
+from email_util import EmailUtil
+from notification_manager import NotificationManager
 from role_management import Role, RoleManager
 from user_management import UserManager
 
@@ -22,6 +24,7 @@ class InvitationManager(BaseManager):
         super().__init__(dynamodb, table_prefix)
         self.user_manager = UserManager(dynamodb, table_prefix)
         self.role_manager = RoleManager(dynamodb, table_prefix)
+        self.notification_manager = NotificationManager(EmailUtil)
 
     def invite_users(self, org_id, inviter_id, emails, invite_type, role=None):
         """
@@ -64,15 +67,24 @@ class InvitationManager(BaseManager):
                 # If the invite exists but is expired, delete the old invite and create a new one
                 if self._is_invite_expired(existing_invite):
                     self._delete_invite(existing_invite['id'])
-                    self._create_and_send_invitation(organization, {'email': email}, invite_type, role)
+                    self._create_and_send_invitation(organization, {'email': email}, invite_type, role, inviter_id)
                 else:
                     # Resend the existing invite if it's still valid
                     self._resend_existing_invite(existing_invite, organization)
             else:
                 # Create a new invite if none exists
-                self._create_and_send_invitation(organization, {'email': email}, invite_type, role)
+                self._create_and_send_invitation(organization, {'email': email}, invite_type, role, inviter_id)
 
             invited_users.append(email)
+
+        # Notify the inviter if there are invited users
+        if invited_users:
+            inviter_email = self.user_manager.get_user_details_by_id(inviter_id)['email']
+            self.notification_manager.send_invitation_sent_notification(
+                inviter_email=inviter_email,
+                invited_users=invited_users,
+                org_name=organization['org_name']
+            )
 
         # Prepare the response summary
         response_message = {
@@ -188,7 +200,7 @@ class InvitationManager(BaseManager):
 
         return invited_users
 
-    def _create_and_send_invitation(self, organization, user, invite_type, role=None):
+    def _create_and_send_invitation(self, organization, user, invite_type, role=None, inviter_id=None):
         """
         Create and send an invitation email to the user.
 
@@ -197,6 +209,7 @@ class InvitationManager(BaseManager):
             user (dict): The user's details, primarily their email.
             invite_type (str): The type of invitation.
             role (str): The role to assign to the user (optional).
+            inviter_id (str): The ID of the user sending the invite (admin or user with permission).
 
         Returns:
             None
@@ -213,6 +226,7 @@ class InvitationManager(BaseManager):
             'created_at': datetime.utcnow().isoformat(),
             'expires_at': expires_at,
             'invite_type': invite_type.value,
+            'inviter_id': inviter_id  # Store inviter_id
         }
 
         if role:
@@ -296,6 +310,16 @@ class InvitationManager(BaseManager):
             UpdateExpression="SET #status = :status",
             ExpressionAttributeNames={'#status': 'status'},
             ExpressionAttributeValues={':status': 'accepted'}
+        )
+
+        # Notify the inviter when the invitee accepts the invitation
+        print (f'--------------invite is {invite}')
+        inviter_email = self.user_manager.get_user_details_by_id(invite['inviter_id'])['email']
+        invitee_name = user['username']  # Assuming 'user' is the invitee
+        self.notification_manager.send_invitation_accepted_notification(
+            inviter_email=inviter_email,
+            invitee_name=invitee_name,
+            org_name=self.org_table.get_item(Key={'id': invite['org_id']})['Item']['org_name']
         )
 
         return {"message": "The invitation has been successfully accepted."}

@@ -9,5 +9,5 @@ curl -X POST http://localhost:5000/organization/invite_by_emails \
 -d "{
   \"org_id\": \"${org_id}\",
   \"emails\": [\"$email1\"],
-  \"role\": \"contributor\"
+  \"role\": \"viewer\"
 }"

@@ -424,7 +424,6 @@ def list_user_organizations(current_user):
     user_id = current_user['id']
 
     # Fetch organizations the user belongs to
-    print(dir(org_manager))
     organizations = org_manager.get_user_organizations(user_id)
 
     if not organizations:

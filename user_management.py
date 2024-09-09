@@ -12,7 +12,6 @@ import utils
 
 from base_management import BaseManager
 from botocore.exceptions import ClientError, NoCredentialsError, PartialCredentialsError
-from permissions_management import PermissionsManager, Permission
 from boto3.dynamodb.conditions import Key  # Add this import statement
 from datetime import datetime, timedelta
 from email_util import EmailUtil
@@ -29,7 +28,6 @@ logger = logging.getLogger(__name__)
 class UserManager(BaseManager):
     def __init__(self, dynamodb, table_prefix):
         super().__init__(dynamodb, table_prefix)
-        self.permissions_manager = PermissionsManager(dynamodb, table_prefix)
         self.jwt_secret = os.getenv('JWT_SECRET')
 
     def _hash_password(self, password):
@@ -661,149 +659,6 @@ class UserManager(BaseManager):
         print (f'----user_management: secret_key: {self.jwt_secret}')
         return token
 
-    def create_group(self, group_name, creator_user_id):
-        if not self.permissions_manager.check_permission(creator_user_id, Permission.CREATE_GROUP):
-            return "Permission denied"
-
-        group_id = str(uuid.uuid4())
-        try:
-            self.groups_table.put_item(
-                Item={
-                    'id': group_id,
-                    'name': group_name,
-                    'permissions': []  # Initialize with no permissions
-                }
-            )
-            return group_id
-        except ClientError as e:
-            print(f"Error creating group: {e}")
-            return None
-
-    def get_user_groups(self, user_id):
-        """Retrieve the list of groups a user is a member of."""
-        try:
-            response = self.user_group_membership_table.query(
-                KeyConditionExpression=Key('user_id').eq(user_id)
-            )
-            group_ids = [item['group_id'] for item in response.get('Items', [])]
-            return group_ids
-        except ClientError as e:
-            print(f"Error retrieving user groups: {e}")
-            return []
-
-    def add_user_to_group(self, executor_user_id, user_id, group_id):
-        """Add a user to a group."""
-        if not self.permissions_manager.check_permission(executor_user_id, Permission.ADD_USER_TO_GROUP):
-            return "Unauthorized: You don't have permission to add users to groups."
-
-        try:
-            self.user_group_membership_table.put_item(
-                Item={
-                    'user_id': user_id,
-                    'group_id': group_id
-                }
-            )
-            return "User added to group"
-        except ClientError as e:
-            print(f"Error adding user to group: {e}")
-            return "Error adding user to group"
-
-    def remove_user_from_group(self, executor_user_id, user_id, group_id):
-        """Remove a user from a group."""
-        if not self.permissions_manager.check_permission(executor_user_id, Permission.REMOVE_USER_FROM_GROUP):
-            return "Unauthorized: You don't have permission to remove users from groups."
-
-        try:
-            self.user_group_membership_table.delete_item(
-                Key={
-                    'user_id': user_id,
-                    'group_id': group_id
-                }
-            )
-            return "User removed from group"
-        except ClientError as e:
-            print(f"Error removing user from group: {e}")
-            return "Error removing user from group"
-
-    def is_user_in_group(self, user_id, group_id):
-        try:
-            response = self.user_group_membership_table.get_item(
-                Key={'user_id': user_id, 'group_id': group_id}
-            )
-            return 'Item' in response
-        except ClientError as e:
-            print(f"Error checking group membership: {e}")
-            return False
-
-    def delete_group(self, executor_user_id, group_id):
-        # Check if the executor has the permission to delete the group
-        if not self.permissions_manager.check_permission(executor_user_id, Permission.MANAGE_PERMISSIONS):
-            return "Unauthorized: You don't have permission to delete groups."
-    
-        # Retrieve the group details
-        group = self.groups_table.get_item(Key={'id': group_id}).get('Item')
-        if not group:
-            return "Group not found."
-    
-        # Remove all users from the group
-        try:
-            response = self.user_group_membership_table.query(
-                IndexName='group_id-index',
-                KeyConditionExpression=Key('group_id').eq(group_id)
-            )
-            for item in response.get('Items', []):
-                self.user_group_membership_table.delete_item(
-                    Key={'user_id': item['user_id'], 'group_id': group_id}
-                )
-        except ClientError as e:
-            print(f"Error removing users from group: {e}")
-            return "Error during user removal"
-    
-        # Remove group permissions
-        try:
-            self.permissions_manager.remove_group_permissions(group_id, group.get('permissions', []))
-        except ClientError as e:
-            print(f"Error removing group permissions: {e}")
-            return "Error during permissions removal"
-    
-        # Remove the group from the organization
-        try:
-            self.org_management.remove_group_from_organization(group['org_id'], group_id)
-        except ClientError as e:
-            print(f"Error removing group from organization: {e}")
-            return "Error during organization update"
-    
-        # Finally, delete the group itself
-        try:
-            self.groups_table.delete_item(Key={'id': group_id})
-            return "Group deleted successfully"
-        except ClientError as e:
-            print(f"Error deleting group: {e}")
-            return "Error during group deletion"
-
-    def check_model_permission(self, user_id, permission):
-        """Check if the user can perform a given model operation considering both user and group permissions."""
-        permission_str = self._convert_permission_to_string(permission)
-        # Check user-specific permissions
-        user_permissions = self.permissions_manager.get_user_permissions(user_id)
-        print(f"User permissions for {user_id}: {user_permissions}")  # Debugging line
-        if permission in user_permissions:
-            return True 
-
-        # Check group permissions if user-specific permissions don't include the permission
-        group_ids = self.get_user_groups(user_id)
-        print(f"Groups for user {user_id}: {group_ids}")  # Debugging line
-        for group_id in group_ids:
-            group_permissions = self.permissions_manager.get_group_permissions(group_id)
-            print(f"Permissions for group {group_id}: {group_permissions}")  # Debugging line
-            print (f'permission {permission_str} in group_permissions {group_permissions} {permission_str in group_permissions}')
-            if permission_str in group_permissions:
-                return True
-
-        # Permission not found
-        return False
-
-
     def change_password(self, user_id, current_password, new_password, confirm_new_password):
         # Fetch the user's details
         response = self.users_table.get_item(Key={'id': user_id})
@@ -844,32 +699,3 @@ class UserManager(BaseManager):
                 'revoked_at': int(time.time())  # Store the time of revocation
             }
         )
-
-
-# Example usage:
-if __name__ == "__main__":
-    manager = UserManager()
-    
-    # Register a new user
-    user_id = manager.register_user('john_doe', 'secure_password')
-    print(f"Registered user ID: {user_id}")
-
-    # Login a user
-    logged_in_user_id = manager.login_user('john_doe', 'secure_password')
-    print(f"Logged in user ID: {logged_in_user_id}")
-
-    # Create a group
-    group_id = manager.create_group('example_group', logged_in_user_id)
-    print(f"Created group ID: {group_id}")
-
-    # Add user to group
-    result = manager.add_user_to_group(logged_in_user_id, logged_in_user_id, group_id)
-    print(result)
-
-    # Remove user from group
-    result = manager.remove_user_from_group(logged_in_user_id, logged_in_user_id, group_id)
-    print(result)
-
-    # Check model permissions
-    can_upload = manager.check_model_permission(logged_in_user_id, Permission.UPLOAD_MODEL)
-    print(f"User can upload model: {can_upload}")

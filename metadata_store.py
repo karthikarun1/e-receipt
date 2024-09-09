@@ -15,8 +15,6 @@ load_environment()
 
 database_location = os.getenv('DATABASE_LOCATION').lower()
 database_type = os.getenv('DATABASE_TYPE').lower()
-local_dir = os.getenv('LOCAL_DIR').lower()
-
 
 class MetadataStore:
 
@@ -85,21 +83,6 @@ class MetadataStore:
         else:
             raise PermissionError("User does not have access to this model.")
     
-    def get_user_groups(self, user_id):
-        """
-        Get the list of groups a user belongs to.
-        
-        :param user_id: The ID of the user.
-        :return: List of group IDs the user belongs to.
-        """
-        try:
-            response = self.group_table.get_item(Key={'user_id': user_id})
-            return response.get('Item', {}).get('group_ids', [])
-        except Exception as e:
-            print(f"Error retrieving user groups: {e}")
-            return []
-
-
     def list_models_for_user(self, user_id):
         #try:
         print (f'------------user_id {user_id}')

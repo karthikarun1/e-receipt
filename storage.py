@@ -21,11 +21,7 @@ class MlModelStorage:
                 self.s3_client = client('s3', endpoint_url='http://localhost:4566')
             elif storage_type == 's3':
                 self.s3_client = client('s3') 
-
-        if self.storage_type == 'local_file':
-            self.local_dir = local_dir or os.getenv('LOCAL_DIR') 
-        else:
-            self.metadata_store = metadata_store or MetadataStore()
+        self.metadata_store = metadata_store or MetadataStore()
 
 
     def save(self, filename, model_file, version, model_name, file_extension,
@@ -42,16 +38,6 @@ class MlModelStorage:
                                 current_username, user_id, group_id, description,
                                 accuracy)
         return success, error
-
-    def _save_local(self, filename, model_file, version, model_name, user_id, group_id):
-        user_dir = os.path.join(self.local_dir, user_id)
-        os.makedirs(user_dir, exist_ok=True)
-        file_path = os.path.join(user_dir, filename)
-        if os.path.exists(file_path):
-            return False, (f'Model version {version} for {model_name} model '
-                           f'already exists for user {user_id}')
-        model_file.save(file_path)
-        return True, None
 
     def _save_s3(self, filename, model_file, version, model_name, user_id, group_id):
         try:

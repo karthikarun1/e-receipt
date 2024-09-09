@@ -84,24 +84,16 @@ class RoleManager(BaseManager):
 
     def _sanity_check(self, requesting_user_role, current_role, new_role):
 
-        print (f'------sc 10 requesting_user_role: {requesting_user_role}')
-        print (f'------sc 20 current_role: {current_role}')
-        print (f'------sc 30 new_role: {new_role}')
-
         if requesting_user_role not in _ADMIN_ROLES:
-            print (f'-----------sc 40')
             raise PermissionError("You don't have permissions to do role change.")
 
         if ((current_role == Role.SUPERADMIN or new_role == Role.SUPERADMIN) and (requesting_user_role != Role.SUPERADMIN)):
-            print (f'-----------sc 50')
             raise PermissionError("Only SuperAdmins can promote to or demote from SuperAdmin.")
 
         if ((current_role == Role.ORGANIZATION_ADMIN or new_role == Role.ORGANIZATION_ADMIN) and (requesting_user_role != Role.SUPERADMIN)):
-            print (f'-----------sc 60')
             raise PermissionError("Only SuperAdmins can promote to or demote from OrganizationAdmin.")
 
         if current_role == new_role:
-            print (f'-----------sc 70')
             raise ValueError('No role change detected.')
 
     def _get_organization(self, org_id):
@@ -145,9 +137,6 @@ class RoleManager(BaseManager):
         """
         Update the user's role in the 'user_roles' structure of the organization.
         """
-        print (f'**************************************------------new_role {new_role}')
-        print (f'**************************************------------new_role {new_role.name}')
-        print (f'**************************************------------new_role {new_role.name}')
         self.org_table.update_item(
             Key={'id': org_id},
             UpdateExpression="SET user_roles.#user_id = :new_role",

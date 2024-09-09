@@ -1,6 +1,5 @@
 import logging
 from base_management import BaseManager
-from permissions_management import PermissionsManager
 from user_management import UserManager
 from org_management import OrganizationManager
 from role_management import RoleManager, Role
@@ -11,7 +10,6 @@ class UserRemovalManager(BaseManager):
         self.user_manager = UserManager(dynamodb, table_prefix)
         self.org_manager = OrganizationManager(dynamodb, table_prefix)
         self.role_manager = RoleManager(dynamodb, table_prefix)
-        self.permissions_manager = PermissionsManager(dynamodb, table_prefix)
         self.logger = logging.getLogger(__name__)
 
     def remove_user(self, admin_id, org_id, username_or_email):

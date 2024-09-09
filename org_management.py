@@ -11,8 +11,6 @@ from datetime import datetime, timedelta
 from base_management import BaseManager
 from invitation_manager_by_email import InvitationManager
 from invite_type import InviteType
-from org_permissions import OrganizationPermissions
-from permissions_management import PermissionsManager
 from role_management import RoleManager, Role, Permission
 from subscription_management import SubscriptionManager, SubscriptionPlanType
 from user_management import UserManager
@@ -32,7 +30,6 @@ class OrganizationManager(BaseManager):
         self.subscription_manager = SubscriptionManager(dynamodb, table_prefix)
         self.role_manager = RoleManager(dynamodb, table_prefix)
         self.user_manager = UserManager(dynamodb, table_prefix)
-        self.permissions_manager = PermissionsManager(dynamodb, table_prefix)
         self.updater = OrganizationUpdater(
             self,
             self.user_manager,
@@ -41,7 +38,6 @@ class OrganizationManager(BaseManager):
             self.org_table_name
         )
         self.invitation_manager = InvitationManager(dynamodb, table_prefix)
-        self.organization_permissions = OrganizationPermissions(dynamodb, table_prefix)
 
     def get_all_organizations(self):
         try:
@@ -325,42 +321,6 @@ class OrganizationManager(BaseManager):
         except ClientError as e:
             logger.error(f"Error removing user {user_id} from organization {org_id}: {e}")
             raise
-
-    def add_group_to_organization(self, org_id, group_id):
-        try:
-            self.groups_table.update_item(
-                Key={'org_id': org_id},
-                UpdateExpression="ADD groups :group_id",
-                ExpressionAttributeValues={':group_id': {group_id}},
-                ReturnValues="UPDATED_NEW"
-            )
-        except ClientError as e:
-            logger.error(f"ClientError: {e.response['Error']['Message']}")
-            # Re-raise the error to be caught by the error handler in app.py
-            raise
-
-    def remove_group_from_organization(self, org_id, group_id):
-        try:
-            self.groups_table.update_item(
-                Key={'org_id': org_id},
-                UpdateExpression="DELETE groups :group_id",
-                ExpressionAttributeValues={':group_id': {group_id}},
-                ReturnValues="UPDATED_NEW"
-            )
-        except ClientError as e:
-            logger.error(f"ClientError: {e.response['Error']['Message']}")
-            # Re-raise the error to be caught by the error handler in app.py
-            raise
-
-    def list_groups_in_organization(self, org_id):
-        try:
-            response = self.groups_table.scan(
-                FilterExpression=Key('org_id').eq(org_id)
-            )
-            return response.get('Items', [])
-        except ClientError as e:
-            logger.error(f"Error listing groups in organization: {e}")
-            return []
 
     def list_organizations(self):
         try:

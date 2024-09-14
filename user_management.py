@@ -338,7 +338,7 @@ class UserManager(BaseManager):
         if not self._check_password(password, hashed_password):
             raise ValueError("Invalid username or email or password.")
 
-        if not user.get('verified', False):
+        if not user.get('email_verified', False):
             raise ValueError("Email not verified. Please verify your email before logging in.")
 
         # Update the last login time
@@ -360,7 +360,7 @@ class UserManager(BaseManager):
         hashed_password = user['password']
 
         # Check if the email is verified
-        if not user.get('verified', False):
+        if not user.get('email_verified', False):
             raise ValueError("Please verify your email before you will be allowed to log in.")
 
         # Check if the password matches

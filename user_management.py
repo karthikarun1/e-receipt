@@ -324,7 +324,12 @@ class UserManager(BaseManager):
     def login_user(self, identifier, password):
         """Authenticate a user by username or email and password."""
         # Try to find the user by username first, then by email
-        user = self.user_dal.get_user_by_username(identifier) or self.user_dal.get_user_by_email(identifier)
+        user = self.user_dal.get_user_by_username(identifier) 
+        print (f'----user by username is is {user}')
+
+        if not user:
+            user = self.user_dal.get_user_by_email(identifier)
+            print (f'----user by email is is {user}')
         
         if not user:
             raise ValueError("Invalid username or email or password.")

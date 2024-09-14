@@ -7,12 +7,11 @@ from role_management import Role, Permission
 _ALLOWED_KEYS  = {"org_name", "plan_type", "description"}
 
 class OrganizationUpdater:
-    def __init__(self, org_manager, user_manager, role_manager, dynamodb, table_name):
+    def __init__(self, org_manager, user_manager, role_manager):
         self.org_manager = org_manager
         self.user_manager = user_manager
         self.role_manager = role_manager
-        self.dynamodb = dynamodb
-        self.table_name = table_name
+        #self.table_name = table_name
 
     def update_organization(self, org_id, user_id, updates):
         self._check_permissions(org_id, user_id)

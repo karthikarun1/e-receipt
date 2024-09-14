@@ -26,8 +26,8 @@ class UserNotFoundException(Exception):
 
 
 class SubscriptionManager(BaseManager):
-    def __init__(self, dynamodb, table_prefix):
-        super().__init__(dynamodb, table_prefix)
+    def __init__(self):
+        super().__init__()
 
     def get_user_subscription(self, user_id):
         """Retrieve the subscription details for a given user."""

@@ -5,11 +5,11 @@ from org_management import OrganizationManager
 from role_management import RoleManager, Role
 
 class UserRemovalManager(BaseManager):
-    def __init__(self, dynamodb, table_prefix):
-        super().__init__(dynamodb, table_prefix)
-        self.user_manager = UserManager(dynamodb, table_prefix)
-        self.org_manager = OrganizationManager(dynamodb, table_prefix)
-        self.role_manager = RoleManager(dynamodb, table_prefix)
+    def __init__(self):
+        super().__init__()
+        self.user_manager = UserManager()
+        self.org_manager = OrganizationManager()
+        self.role_manager = RoleManager()
         self.logger = logging.getLogger(__name__)
 
     def remove_user(self, admin_id, org_id, username_or_email):

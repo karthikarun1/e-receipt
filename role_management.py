@@ -23,11 +23,9 @@ class Permission(Enum):
 _ADMIN_ROLES = [Role.ORG_SUPERADMIN, Role.ORG_ADMIN]
 
 class RoleManager(BaseManager):
-    def __init__(self, dynamodb, table_prefix):
-        super().__init__(dynamodb, table_prefix)
-        self.dynamodb = dynamodb
-        self.table_prefix = table_prefix
-        self.user_manager = UserManager(dynamodb, table_prefix)
+    def __init__(self):
+        super().__init__()
+        self.user_manager = UserManager()
 
     def change_user_role(self, org_id, user_id, requesting_user_id, new_role: Role):
         """Changes user role after checks.

@@ -1,6 +1,5 @@
 import os
 import io
-import joblib
 import json
 import jwt
 import logging
@@ -11,7 +10,6 @@ import traceback
 import tempfile
 import time
 
-import dynamodb_utils
 import s3_utils
 import utils
 
@@ -50,17 +48,12 @@ app.secret_key = JWT_SECRET  # needed for sessions to work
 
 # Initialize globally
 table_prefix = os.getenv('TABLE_PREFIX')
-dynamodb_resource = dynamodb_utils.get_dynamodb_resource()
-dynamodb_client = dynamodb_utils.get_dynamodb_client()
 s3_client = s3_utils.get_client()
 metadata_table_name = f'{table_prefix}_' + os.getenv('METADATA_TABLE')
 metadata_store = MetadataStore(table_name=metadata_table_name)
 storage = MlModelStorage(metadata_store=metadata_store)
 
-user_manager = UserManager(dynamodb_resource, table_prefix)
-org_manager = OrganizationManager(dynamodb_resource, table_prefix)
-user_removal_manager = UserRemovalManager(dynamodb_resource, table_prefix)
-role_manager = RoleManager(dynamodb_resource, table_prefix)
+user_manager = UserManager()
 
 # Create a prometheus metric
 registry = CollectorRegistry()
@@ -96,13 +89,6 @@ DETAILED_LOGGING = os.getenv('DETAILED_LOGGING', 'false').lower() == 'true'
 LOG_VALUEERROR = os.getenv('LOG_VALUEERROR', 'false').lower() == 'true'
 
 USAGE_LOG_FILE_NAME='usage_logs.txt'
-
-# Create a metric to track prediction times
-PREDICTION_TIME = Summary('prediction_duration_seconds', 'Time spent processing prediction requests')
-
-# Load the maximum model file size limit from the .env file (convert MB to bytes)
-MAX_MODEL_FILE_SIZE_MB = int(os.getenv('MAX_MODEL_FILE_SIZE_MB', 100))  # Default to 100 MB if not set
-MAX_MODEL_FILE_SIZE = MAX_MODEL_FILE_SIZE_MB * 1024 * 1024  # Convert MB to bytes
 
 # Utility function to get request data
 def get_request_data():
@@ -232,215 +218,6 @@ def superuser_required(f):
 def protected_resource(user):
     # This resource is protected and only accessible with a valid token and registered user
     return jsonify({'message': f'Welcome, {user["username"]}! This is a protected resource.'})
-
-
-@app.route('/change_role', methods=['POST'])
-@token_required
-def change_user_role_endpoint(current_user):
-    # Extract required fields from the request data using get_request_data
-    print (f'------current user is {current_user}')
-    data = get_request_data()
-
-    org_id = data['org_id']
-    user_id = data['user_id']
-    new_role_str = data['new_role']
-    
-    # Convert the new role to the appropriate enum type
-    # This will automatically do sanity check to make sure
-    # that the new role is a valid role or not
-    new_role_enum = Role(new_role_str)
-
-    # Call the change_user_role method from RoleManager
-    result = role_manager.change_user_role(org_id, user_id, current_user['id'], new_role_enum)
-
-    # Return success response
-    return jsonify({"message": result}), 200
-
-
-@app.route('/create_organization', methods=['POST'])
-@token_required
-def create_organization(current_user):
-    data = get_request_data()
-
-    org_name = data.get('org_name')
-    description = data.get('description')
-    if not org_name:
-        return jsonify({'error': 'Organization name is required'}), 400
-
-    # Call the create_organization method
-    organization = org_manager.create_organization(
-        org_name=org_name,
-        description=description,
-        creator_user_id=current_user['id']
-    )
-
-    return jsonify({'message': 'Organization created successfully', 'organization': organization}), 201
-
-
-@app.route('/update_organization', methods=['POST'])
-@token_required
-def update_organization(current_user):
-    data = get_request_data()
-
-    org_id = data.get('org_id')
-    if not org_id:
-        return jsonify({'error': 'Organization ID is required'}), 400
-
-    # Check if the organization exists
-    org = org_manager.get_organization_by_id(org_id)
-
-    # Extract the fields to update, excluding 'org_id'
-    updates = {key: value for key, value in data.items() if key != 'org_id'}
-
-    # Proceed with the update logic
-    updated_org = org_manager.update_organization(
-        org_id=org_id,
-        user_id=current_user['id'],  # Pass the current user's ID
-        updates=updates
-    )
-    updated_org = utils.convert_sets_to_lists(updated_org)
-
-    return jsonify({'message': 'Organization updated successfully', 'organization': updated_org}), 200
-
-
-@app.route('/organization/details', methods=['GET'])
-@token_required
-def view_organization_details(current_user):
-    # Get request data
-    data = get_request_data()
-
-    # Extract organization ID from the request data
-    org_id = data.get('org_id')
-    if not org_id:
-        return jsonify({"error": "Organization ID is required."}), 400
-
-    # Fetch organization details with authorization check
-    organization_details = org_manager.get_organization_details(org_id, current_user['id'])
-
-    return jsonify(organization_details), 200
-
-
-@app.route('/organization/invite_by_emails', methods=['POST'])
-@token_required
-def invite_users_to_organization_by_email(current_user):
-    data = get_request_data()
-
-    org_id = data.get('org_id')
-    emails = data.get('emails')
-    role_str = data.get('role').lower()  # Role as a string from request
-
-    if not org_id or not emails:
-        return jsonify({"error": "Organization ID and emails are required."}), 400
-
-    # Validate role if provided
-    if role_str:
-        allowed_roles = [r.name.lower() for r in Role]
-        if role_str not in allowed_roles:
-            return jsonify({"error": f"Invalid role: {role_str}. Allowed roles are: {', '.join(allowed_roles)}."}), 400
-
-    invite_type = InviteType.ORGANIZATION  # Set the invite type as ORGANIZATION
-
-    # Invite users by their email addresses with the optional role
-    invited_users = org_manager.invite_users(org_id, current_user['id'], emails, invite_type, role_str)
-
-    if not invited_users: 
-        return jsonify({"message": "No new invitations were sent. The specified emails might already belong to members."}), 200
-
-    return jsonify({"message": "Invitations sent successfully.", "invited_users": invited_users}), 200
-
-
-@app.route('/organization/invite', methods=['POST'])
-@token_required
-def invite_users_to_organization(current_user):
-    data = get_request_data()
-
-    org_id = data.get('org_id')
-    user_ids = data.get('user_ids')
-    invite_type = InviteType.ORGANIZATION  # Set the invite type as ORGANIZATION
-
-    if not org_id or not user_ids:
-        return jsonify({"error": "Organization ID and user IDs are required."}), 400
-
-    # Invite users to the organization
-    invited_users = org_manager.invite_users(org_id, current_user['id'], user_ids, invite_type)
-
-    if not invited_users:
-        return jsonify({"message": "No new invitations were sent. The specified users might already be members."}), 200
-
-    return jsonify({"message": "Invitations sent successfully.", "invited_users": invited_users}), 200
-
-
-@app.route('/organization/<org_id>/users', methods=['GET'])
-@token_required
-def get_users_with_roles(user, org_id):
-    users_with_roles = org_manager.get_users_with_roles(user['id'], org_id)
-    
-    if not users_with_roles:
-        return jsonify({"message": "No users found for this organization."}), 404
-    
-    return jsonify(users_with_roles), 200
-
-
-@app.route('/invite', methods=['GET'])
-def process_invite():
-    data = get_request_data()
-    # Extract query parameters
-    invitation_id = data.get('invitation_id')
-    expires_at = unquote(data.get('expires_at'))
-    signature = data.get('signature')
-
-    if not invitation_id or not expires_at or not signature:
-        return jsonify({"error": "Invitation ID, expiration time, and signature are required."}), 400
-
-    # Process the invitation
-    result = org_manager.process_invitation(invitation_id, expires_at, signature)
-
-    return jsonify(result), 200
-
-
-@app.route('/organization/remove_user', methods=['POST'])
-@token_required
-def remove_user_from_org(current_user):
-    # Get request data using get_request_data() helper
-    data = get_request_data()
-    admin_id = current_user['id']
-    org_id = data.get('org_id')
-    username_or_email = data.get('username_or_email')
-
-    # Check for missing required parameters
-    if not admin_id or not org_id or not username_or_email:
-        return jsonify({"error": "Missing required parameters: admin_id, org_id, username_or_email"}), 400
-
-    # Call the user removal function
-    result = user_removal_manager.remove_user(admin_id, org_id, username_or_email)
-
-    return jsonify(result), 200
-
-
-@app.route('/user/organizations', methods=['GET'])
-@token_required
-def list_user_organizations(current_user):
-    # Get the current user's ID from the token
-    user_id = current_user['id']
-
-    # Fetch organizations the user belongs to
-    organizations = org_manager.get_user_organizations(user_id)
-
-    if not organizations:
-        return jsonify({"message": "User does not belong to any organizations."}), 404
-
-    organizations = utils.convert_sets_to_lists(organizations)
-
-    return jsonify({"organizations": organizations}), 200
-
-
-@app.route('/list_all_organizations', methods=['GET'])
-@superuser_required
-def list_all_organizations(current_user):
-    organizations = org_manager.get_all_organizations()
-    organizations = utils.convert_sets_to_lists(organizations)
-    return jsonify({"organizations": organizations}), 200
-
 
 @app.route('/change_password', methods=['POST'])
 @token_required
@@ -639,21 +416,6 @@ def get_user():
 
 
 # superuser
-# Flask endpoint to list contents of a specific DynamoDB table
-@app.route('/list_table/<string:table_name>', methods=['GET'])
-@superuser_required
-def list_table_contents(user, table_name):
-    # Access the DynamoDB table
-    table = dynamodb_resource.Table(table_name)
-
-    # Scan the table to get all items
-    response = table.scan()
-    items = utils.convert_sets_to_lists(response.get('Items', []))
-
-    return jsonify({'status': 'success', 'data': items}), 200
-
-
-# superuser
 # Flask endpoint to check token expiration time
 @app.route('/token_remaining_time', methods=['POST'])
 @superuser_required
@@ -667,30 +429,6 @@ def token_remaining_time(user):
     remaining_time_info = utils.get_remaining_time_for_token(token, JWT_SECRET)
     return jsonify(remaining_time_info), 200
 
-
-# superuser
-# Flask endpoint to list all DynamoDB tables
-@app.route('/list_all_tables', methods=['GET'])
-@superuser_required
-def list_dynamodb_tables(user):
-    # List all tables in DynamoDB
-    response = dynamodb_client.list_tables()
-    table_names = response.get('TableNames', [])
-
-    return jsonify({'status': 'success', 'tables': table_names}), 200
-
-
-# superuser
-@app.route('/describe_table/<string:table_name>', methods=['GET'])
-@superuser_required
-def describe_table(user, table_name):
-    # Use the DynamoDB client to describe the table
-    table_description = dynamodb_client.describe_table(TableName=table_name)
-
-    return jsonify({
-        'status': 'success',
-        'table_description': table_description
-    }), 200
 
 # superuser
 @app.route('/list_s3_contents', methods=['GET'])
@@ -790,21 +528,6 @@ def check_auth(username, password):
     return username == 'admin' and password == 'secret'
 
 
-def authenticate():
-    return jsonify({"message": "Authentication required"}), 401
-
-
-def sanitize_data(data):
-    # Example sanitization: Convert all strings to str type and strip whitespace
-    sanitized_data = {}
-    for key, value in data.items():
-        if isinstance(value, str):
-            sanitized_data[key] = value.strip()
-        else:
-            sanitized_data[key] = value
-    return sanitized_data
-
-
 # Sanitize filename by removing any potentially dangerous characters
 def sanitize_filename(filename):
     return re.sub(r'[^\w\s.-]', '', filename).strip()
@@ -830,32 +553,6 @@ def internal_error(error):
     return jsonify({"error": "Internal Server Error", "message": str(error)}), 500
 
 
-def requires_auth(f):
-    @functools.wraps(f)
-    def decorated(*args, **kwargs):
-        auth = request.authorization
-        if not auth or not check_auth(auth.username, auth.password):
-            return authenticate()
-        return f(*args, **kwargs)
-    return decoratee
-
-
-def requires_data(f):
-    @functools.wraps(f)
-    def decorated_function(*args, **kwargs):
-        # Check if data exists in JSON, form, or files for POST, PUT, DELETE
-        if request.method in ['POST', 'PUT', 'DELETE']:
-            data = request.json if request.is_json else request.form
-            if not data and not request.files:
-                return bad_request('Request data is missing')
-        # Check if data exists in args for GET requests
-        elif request.method == 'GET':
-            if not request.args:
-                return bad_request('Request data is missing')
-        return f(*args, **kwargs)
-    return decorated_function
-
-
 @app.route('/health_check', methods=['GET'])
 def health_check():
     return jsonify({"message": "App is running"}), 200
@@ -864,386 +561,6 @@ def health_check():
 @app.route('/check_logging')
 def check_logging():
     return f"DETAILED_LOGGING is set to: {DETAILED_LOGGING}\n"
-
-
-from io import BytesIO
-
-def validate_model(model_file):
-    try:
-        # Create an in-memory copy of the file for validation
-        model_file_stream = BytesIO(model_file.read())
-        model_file.seek(0)  # Reset the original file stream position
-
-        # Validate the model from the in-memory stream
-        joblib.load(model_file_stream)
-        return True
-    except Exception as e:
-        app.logger.error(f"Model validation failed: {str(e)}")
-        return False
-
-
-def create_model_metadata(user_id, model_name, version, file_extension,
-                          description=None, accuracy=None,
-                          current_user=None):
-    """
-    Creates and saves metadata for the uploaded model.
-
-    Args:
-        model_filename (str): The filename of the uploaded model.
-        version (str): The version of the uploaded model.
-        description (str, optional): Description of the model.
-        accuracy (float, optional): Accuracy of the model.
-        current_user (str, optional): Username of the person uploading the model.
-
-    Returns:
-        str: Path to the metadata file.
-    """
-    # Generate metadata
-    metadata = {
-        'model_name': model_name,
-        'file_extension': file_extension,
-        'version': version,
-        'description': description or 'No description provided',
-        'accuracy': accuracy if accuracy is not None else 'Accuracy not provided',
-        'created_by': current_user or 'Unknown',
-        'created_at': datetime.utcnow().isoformat()
-    }
-
-    # Define metadata file path
-    metadata_filename = f"{model_name}_{version}_metadata.json"  # Adjust versioning as needed
-    metadata_path = os.path.join(user_id, LOCAL_DIR, metadata_filename)
-    
-    # Save metadata to file
-    with open(metadata_path, 'w') as f:
-        json.dump(metadata, f, indent=4)
-    
-    return metadata_path
-
-
-@app.route('/remove_model/<string:model_name>/<string:version>', methods=['DELETE'])
-@token_required
-def remove_model_by_name_and_version(current_user, model_name, version):
-    # Fetch the model metadata
-    user_id = current_user['id']
-
-    # Fetch the model metadata from DynamoDB
-    metadata = metadata_store.get_model_metadata_by_name_and_version(user_id, model_name, version)
-    if not metadata:
-        return jsonify({'status': 'error', 'message': 'Model not found.'}), 404
-
-    # Check if the current user is the owner of the model
-    if metadata['user_id'] != current_user['id']:
-        return jsonify({'status': 'error', 'message': 'Unauthorized to remove this model.'}), 403
-
-    # Get the S3 key for the model
-    s3_key = user_id + '/' + metadata['filename']
-
-    # Remove the model from S3
-    storage.remove_model_by_key(s3_key)
-
-    # Remove the model metadata from DynamoDB
-    metadata_store.remove_model_metadata_by_id(user_id, metadata['id'])
-
-    return jsonify({'status': 'success', 'message': 'Model removed successfully.'}), 200
-
-
-@app.route('/remove_model/<string:model_id>', methods=['DELETE'])
-@token_required
-def remove_model_by_id(current_user, model_id):
-    # Fetch the model metadata
-    user_id = current_user['id']
-    metadata = metadata_store.get_model_metadata_by_model_id(user_id, model_id)
-
-    if not metadata:
-        return jsonify({'status': 'error', 'message': 'Model not found.'}), 404
-
-    # Check if the current user is the owner of the model
-    if metadata['user_id'] != current_user['id']:
-        return jsonify({'status': 'error', 'message': 'Unauthorized to remove this model.'}), 403
-
-    # Remove the model from S3
-    s3_key = f"{metadata['user_id']}/{metadata['filename']}"
-    storage.remove_model_by_key(s3_key)
-
-    # Remove the model metadata from DynamoDB
-    metadata_store.remove_model_metadata_by_id(user_id, model_id)
-
-    return jsonify({'status': 'success', 'message': 'Model removed successfully.'}), 200
-
-
-@app.route('/upload_model', methods=['POST'])
-@token_required
-def upload_model(current_user):
-    # Check if request is JSON or form
-    data = get_request_data()
-
-    # Sanitize and validate input
-    data = sanitize_data(data)
-    model_name = data.get('model_name')
-    version = data.get('version')
-    accuracy = data.get('accuracy', 'N/A')
-    description = data.get('description', 'No description')
-    model_file = request.files.get('model_file')
-
-    if not model_name:
-        return bad_request('Model name is required')
-
-    if not version:
-        return bad_request('Version is required')
-
-    if not model_file:
-        return bad_request("Model file is required")
-
-    # Check the file size to make sure it is within allowed limit
-    if len(model_file.read()) > MAX_MODEL_FILE_SIZE:
-        return jsonify({'message': f'Model file exceeds the maximum allowed size of {MAX_MODEL_FILE_SIZE_MB} MB'}), 400
-    
-    model_file.seek(0)  # Reset the file pointer after reading the file size
-
-    # Validate the model before saving
-    if not validate_model(model_file):
-        return bad_request('Invalid model file')
-
-    # Secure the file name and save it
-    file_extension = model_file.filename.rsplit('.', 1)[-1].lower()
-    filename = secure_filename(f"{model_name}_{version}.{file_extension}")
-
-    user_id = current_user['id']  # Get the user ID from the authenticated user
-
-    # Save model to S3 and metadata to DynamoDB using the MlModelStorage class
-    success, error = storage.save(
-        filename,
-        model_file,
-        version,
-        model_name,
-        file_extension,
-        current_user['username'],
-        user_id,
-        description=description,
-        accuracy=accuracy,
-    )
-
-    if not success:
-        return bad_request(f'Error: {error}. Unable to save model version {version} for {model_name}')
-
-    return jsonify({
-        'message': 'Model uploaded successfully',
-        'model_name': model_name,
-        'version': version,
-    }), 201
-
-
-@app.route('/download_model/<model_id>', methods=['GET'])
-@token_required
-def download_model_by_id(current_user, model_id):
-    # Get the user's ID from the JWT
-    user_id = current_user['id']
-    
-    # Fetch the model metadata from DynamoDB
-    model_metadata = metadata_store.get_model_metadata_by_model_id(user_id, model_id)
-    if not model_metadata:
-        return jsonify({'status': 'error', 'message': 'Model not found'}), 404
-    
-    # Get the S3 key for the model
-    s3_key = user_id + '/' + model_metadata['filename']
-    
-    # Fetch the model file from S3
-    bucket_name = os.getenv('S3_BUCKET_NAME')
-    s3_object = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
-    
-    # Prepare the file for download
-    file_stream = io.BytesIO(s3_object['Body'].read())
-    file_stream.seek(0)
-    
-    # Send the file to the user
-    return send_file(file_stream, as_attachment=True, download_name=s3_key, mimetype='application/octet-stream')
-
-
-@app.route('/download_model/<model_name>/<version>', methods=['GET'])
-@token_required
-def download_model_by_name_and_version(current_user, model_name, version):
-    # Get the user's ID from the JWT
-    user_id = current_user['id']
-    
-    # Fetch the model metadata from DynamoDB
-    model_metadata = metadata_store.get_model_metadata_by_name_and_version(user_id, model_name, version)
-    if not model_metadata:
-        return jsonify({'status': 'error', 'message': 'Model not found'}), 404
-
-    # Check if the current user is the owner of the model
-    if model_metadata['user_id'] != current_user['id']:
-        return jsonify({'status': 'error', 'message': 'Unauthorized to remove this model.'}), 403
-    
-    # Get the S3 key for the model
-    s3_key = user_id + '/' + model_metadata['filename']
-    
-    # Fetch the model file from S3
-    bucket_name = os.getenv('S3_BUCKET_NAME')
-    s3_object = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
-    
-    # Prepare the file for download
-    file_stream = io.BytesIO(s3_object['Body'].read())
-    file_stream.seek(0)
-    
-    # Send the file to the user
-    return send_file(file_stream, as_attachment=True, download_name=s3_key, mimetype='application/octet-stream')
-
-
-def get_file_extension_from_metadata(model_name, version):
-    """
-    Obtain the file extension from the metadata file for a given model and version.
-
-    Args:
-        model_name (str): The name of the model.
-        version (str): The version of the model.
-
-    Returns:
-        str: The file extension of the model file.
-        None: If metadata or file extension is not found.
-    """
-    # Construct the metadata file path
-    metadata_filename = f"{model_name}_{version}_metadata.json"
-    metadata_path = os.path.join(LOCAL_DIR, metadata_filename)
-    
-    # Check if the metadata file exists
-    if not os.path.isfile(metadata_path):
-        return None, None
-    
-    # Read metadata to get file extension
-    with open(metadata_path, 'r') as f:
-        metadata = json.load(f)
-    
-    return metadata_path, metadata.get('file_extension', None)
-
-
-def evaluate_prediction(model, input_data, expected_output=None):
-    """
-    Evaluate the model's prediction and optionally compare it to expected output.
-
-    Args:
-        model (object): The loaded model.
-        input_data (dict): The input data for the prediction.
-        expected_output (any, optional): The expected output to compare against.
-
-    Returns:
-        dict: A dictionary containing prediction results and accuracy (if applicable).
-    """
-    prediction = model.predict([input_data])
-    result = {
-        'prediction': prediction,
-    }
-
-    if expected_output is not None:
-        accuracy = None
-        try:
-            accuracy = prediction[0] == expected_output  # Simple accuracy check
-        except Exception as e:
-            app.logger.error(f"Error evaluating accuracy: {str(e)}")
-        result['accuracy'] = accuracy
-
-    return result
-
-
-@PREDICTION_TIME.time()
-def predict_with_metrics(model_file_path, features, expected_output):
-    # Load the model
-    with open(model_file_path, 'rb') as f:
-        model = joblib.load(f)
-    result = evaluate_prediction(model, features, expected_output)
-    return result
-
-
-@app.route('/predict/<string:model_name>/<string:version>', methods=['POST'])
-@token_required
-def predict(current_user, model_name, version):
-    start_time = time.time()
-    data = get_request_data()
-
-    if not model_name or not version:
-        return bad_request("Model name and version are required")
-
-    # Get the user's ID from the JWT
-    user_id = current_user['id']
-
-    # Fetch the model metadata from DynamoDB
-    model_metadata = metadata_store.get_model_metadata_by_name_and_version(user_id, model_name, version)
-    if not model_metadata:
-        return jsonify({'status': 'error', 'message': 'Model not found'}), 404
-
-    # Check if the current user is the owner of the model
-    if model_metadata['user_id'] != current_user['id']:
-        return jsonify({'status': 'error', 'message': 'Unauthorized to access this model.'}), 403
-    
-    # Get the S3 key for the model
-    s3_key = f"{user_id}/{model_metadata['filename']}"
-    
-    # Fetch the model file from S3
-    bucket_name = os.getenv('S3_BUCKET_NAME')
-    s3_object = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
-    
-    # Prepare the model file for loading
-    model_file_stream = io.BytesIO(s3_object['Body'].read())
-    model_file_stream.seek(0)
-
-    # Load the model using joblib
-    model = joblib.load(model_file_stream)
-
-    # Extract features from the input data
-    features = data.get('features') or data.get('data')
-    if not features:
-        return bad_request('No features or data provided')
-
-    expected_output = data.get('expected_output', None)
-    result = evaluate_prediction(model, features, expected_output)
-
-    # Log usage if enabled
-    if os.getenv('LOG_MODEL_USAGE', 'False').lower() == 'true':
-        log_model_usage(model_name, version, features,
-                        result['prediction'].tolist(),
-                        result.get('accuracy'))
-
-    duration = time.time() - start_time
-    app.logger.info(f"Prediction processed in {duration:.2f} seconds")
-
-    if expected_output: 
-        return jsonify({'prediction': result['prediction'].tolist(),
-                        'accuracy': str(result['accuracy'])}), 200
-    else:
-        return jsonify({'prediction': result['prediction'].tolist()}), 200
-
-
-def log_model_usage(model_name, version, input_data, output, prediction_accuracy):
-    log_entry = (f'{time.strftime('%Y-%m-%d %H:%M:%S')} - Model: {model_name} '
-                 f'Version: {version} - Input: {input_data} - '
-                 f'Output: {output}\n')
-    with open(USAGE_LOG_FILE_NAME, 'a') as log_file:
-        log_file.write(log_entry)
-
-
-@app.route('/list_models', methods=['GET'])
-@token_required
-def list_models(current_user):
-    # Get the user's ID from the JWT
-    user_id = current_user['id']
-    
-    # Query the DynamoDB table for models belonging to this user
-    response = metadata_store.list_models_for_user(user_id)
-
-    # Return the list of models
-    return jsonify({'status': 'success', 'models': response.get('Items', [])}), 200
-
-
-@app.route('/download_model/<string:model_name>/<string:version>', methods=['GET'])
-@token_required
-def download_model(current_user, model_name, version):
-    user_id = current_user['id']  # Get the user ID from the authenticated user
-
-    model_file = storage.retrieve_model(user_id, model_name, version)
-    if model_file:
-        return send_file(model_file, as_attachment=True)
-    else:
-        return not_found(f'Model {model_name} version {version} not found')
-
 
 @app.route('/verify_email', methods=['GET'])
 def verify_email():
@@ -1260,18 +577,6 @@ def verify_email():
         return bad_request('Verification failed or code expired')
 
 
-@app.route('/organization/<org_id>/users', methods=['GET'])
-@token_required
-def list_users_in_organization(current_user, org_id):
-    # Retrieve the list of users in the organization
-    users = org_manager.list_users_in_organization(org_id, current_user['id'])
-
-    if not users:
-        return jsonify({"message": "No users found in this organization."}), 404
-
-    return jsonify({"users": users}), 200
-
-
 @app.before_request
 def log_request_info():
     if request.endpoint == 'predict':
@@ -1281,8 +586,7 @@ def log_request_info():
 
 @app.before_request
 def start_timer():
-    if request.endpoint != 'list_models':
-        request.start_time = time.time()
+    request.start_time = time.time()
 
 
 @app.after_request

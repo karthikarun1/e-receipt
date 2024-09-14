@@ -1,27 +1,36 @@
+import inspect
+import os
+import psycopg2
 from email_util import EmailUtil
+from user_dal import UserDAL
+
+# Load environment variables
+from config_loader import load_environment
+load_environment()
 
 class BaseManager:
-    def __init__(self, dynamodb, table_prefix):
-
-        self.dynamodb = dynamodb
-
-        self.users_table_name = f'{table_prefix}_Users'
-        self.groups_table_name = f'{table_prefix}_Groups'
-        self.org_table_name = f'{table_prefix}_Organizations'
-        self.permissions_table_name = f'{table_prefix}_Permissions'
-        self.subscriptions_table_name = f'{table_prefix}_Subscriptions'
-        self.invites_table_name = f'{table_prefix}_Invites'
-        self.user_group_membership_table_name = f'{table_prefix}_UserGroupMembership'
-
-        self.users_table = dynamodb.Table(self.users_table_name)
-        self.groups_table = dynamodb.Table(self.groups_table_name)
-        self.org_table = dynamodb.Table(self.org_table_name)
-        self.subscriptions_table = dynamodb.Table(self.subscriptions_table_name)
-        self.invites_table = dynamodb.Table(self.invites_table_name)
-        self.permissions_table = dynamodb.Table(self.permissions_table_name)
-        self.user_group_membership_table = dynamodb.Table(self.user_group_membership_table_name)
-        self.verification_table = dynamodb.Table(f'{table_prefix}_EmailVerification')
-        self.reset_tokens_table = dynamodb.Table(f'{table_prefix}_ResetTokens')
-        self.revoked_tokens_table = dynamodb.Table(f'{table_prefix}_RevokedTokens')
-
+    def __init__(self):
+        caller_frame = inspect.stack()[1]
+        print(f"BaseManager __init__() called by: {caller_frame.function} in {caller_frame.filename} at line {caller_frame.lineno}")
         self.email_util= EmailUtil()
+
+        dbname=os.getenv("DB_NAME")
+        user=os.getenv("DB_USER")
+        password=os.getenv("DB_PASSWORD")
+        host=os.getenv("DB_HOST")
+        port=os.getenv("DB_PORT")
+
+        self.db_connection = psycopg2.connect(
+            dbname=dbname,
+            user=user,
+            password=password,
+            host=host,
+            port=port
+        )
+
+        # Debugging: Print connection details
+        print (f'-------------------DB info: dbname: {dbname}, user: {user}, password: {password}, host: {host}, port: {port}')
+
+        # Ensure autocommit is disabled immediately after connection
+        self.db_connection.autocommit = False
+        self.user_dal = UserDAL(self.db_connection)

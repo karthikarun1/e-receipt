@@ -12,23 +12,9 @@ class OrgGroup(Enum):
     ORG_ADMIN = "Org Admins"
 
 class OrgGroupManager(BaseManager):
-    def __init__(self, dynamodb, table_prefix):
-        super().__init__(dynamodb, table_prefix)
-        self.dynamodb = dynamodb
-        self.role_manager = RoleManager(dynamodb, table_prefix)
-
-class OrgGroupManager(BaseManager):
-    def __init__(self, dynamodb, table_prefix):
-        super().__init__(dynamodb, table_prefix)
-        self.dynamodb = dynamodb
-        self.role_manager = RoleManager(dynamodb, table_prefix)
-
-class OrgGroupManager(BaseManager):
-    def __init__(self, dynamodb, table_prefix):
-        super().__init__(dynamodb, table_prefix)
-        self.dynamodb = dynamodb
-        self.role_manager = RoleManager(dynamodb, table_prefix)
-        self.org_table = dynamodb.Table(f'{table_prefix}_Organizations')  # Assuming the organization table
+    def __init__(self):
+        super().__init__()
+        self.role_manager = RoleManager()
 
     def create_group(self, org_id, group_name, creator_user_id, is_org_creation=False):
         """

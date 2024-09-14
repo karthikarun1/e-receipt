@@ -335,3 +335,10 @@ def convert_sets_to_lists(data):
     else:
         # If the data is neither dict, list, nor set, return it as is
         return data
+
+def get_db_info(db_conn):
+    cursor = db_conn.cursor()
+    cursor.execute("SELECT oid, datname FROM pg_database WHERE datname = current_database();")
+    db_info = cursor.fetchone()
+    print(f"---------------------Connected to database OID: {db_info[0]}, Name: {db_info[1]}")
+

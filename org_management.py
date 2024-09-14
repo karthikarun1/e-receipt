@@ -4,10 +4,8 @@ import os
 import uuid
 
 from botocore.exceptions import ClientError
-from boto3.dynamodb.conditions import Attr
 from datetime import datetime, timedelta
 
-# Import setup for DynamoDB from setup_dynamodb.py
 from base_management import BaseManager
 from invitation_manager_by_email import InvitationManager
 from invite_type import InviteType
@@ -26,20 +24,18 @@ logger = logging.getLogger(__name__)
 _AUTHORIZED_ROLES_TO_VIEW_ORGANIZATION_DETAILS = [r.name.lower() for r in Role]
 
 class OrganizationManager(BaseManager):
-    def __init__(self, dynamodb, table_prefix):
-        super().__init__(dynamodb, table_prefix)
-        self.subscription_manager = SubscriptionManager(dynamodb, table_prefix)
-        self.role_manager = RoleManager(dynamodb, table_prefix)
-        self.user_manager = UserManager(dynamodb, table_prefix)
-        self.org_group_manager = OrgGroupManager(dynamodb, table_prefix)
+    def __init__(self):
+        super().__init__()
+        self.subscription_manager = SubscriptionManager()
+        self.role_manager = RoleManager()
+        self.user_manager = UserManager()
+        self.org_group_manager = OrgGroupManager()
         self.updater = OrganizationUpdater(
             self,
             self.user_manager,
  	    self.role_manager,
-            dynamodb, 
-            self.org_table_name
         )
-        self.invitation_manager = InvitationManager(dynamodb, table_prefix)
+        self.invitation_manager = InvitationManager()
 
     def get_all_organizations(self):
         try:

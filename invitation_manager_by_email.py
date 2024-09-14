@@ -20,10 +20,10 @@ load_environment()
 ORG_INVITE_EMAIL_VALID_MINUTES = os.getenv('ORG_INVITE_EMAIL_VALID_MINUTES', 5)
 
 class InvitationManager(BaseManager):
-    def __init__(self, dynamodb, table_prefix):
-        super().__init__(dynamodb, table_prefix)
-        self.user_manager = UserManager(dynamodb, table_prefix)
-        self.role_manager = RoleManager(dynamodb, table_prefix)
+    def __init__(self):
+        super().__init__()
+        self.user_manager = UserManager()
+        self.role_manager = RoleManager()
         self.notification_manager = NotificationManager(EmailUtil)
 
     def invite_users(self, org_id, inviter_id, emails, invite_type, role=None):

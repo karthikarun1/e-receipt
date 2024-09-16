@@ -6,24 +6,10 @@ import logging
 from functools import wraps
 import utils
 
+from transactional import transactional
+
 logger = logging.getLogger(__name__)
 
-def transactional(func):
-    """
-    Decorator to handle database transactions.
-    It commits the transaction on success or rolls it back on failure.
-    """
-    @wraps(func)
-    def wrapper(self, *args, **kwargs):
-        try:
-            result = func(self, *args, **kwargs)
-            self.conn.commit()  # Commit if everything is successful
-            return result
-        except Exception as e:
-            logger.error(f"Error in {func.__name__}: {e}")
-            self.conn.rollback()  # Rollback on error
-            raise
-    return wrapper
 
 class UserDAL:
     def __init__(self, db_connection):

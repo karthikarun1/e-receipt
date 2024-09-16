@@ -4,7 +4,9 @@ import json
 import jwt
 import logging
 import functools
+import postgresql_db_utils
 import re
+import requests
 import shutil
 import traceback
 import tempfile
@@ -14,7 +16,7 @@ import s3_utils
 import utils
 
 # System defined
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, redirect, request, jsonify, render_template_string, send_file, session, url_for
 from flasgger import Swagger
 from input_validator import InputValidator
@@ -24,6 +26,7 @@ from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 
 # User defined
+import create_clover_items
 from invite_type import InviteType
 from metadata_store import MetadataStore
 from org_management import OrganizationManager
@@ -90,6 +93,16 @@ LOG_VALUEERROR = os.getenv('LOG_VALUEERROR', 'false').lower() == 'true'
 
 USAGE_LOG_FILE_NAME='usage_logs.txt'
 
+CLOVER_AUTHORIZATION_URL = os.getenv('CLOVER_AUTHORIZATION_URL')
+CLOVER_TOKEN_URL = os.getenv('CLOVER_TOKEN_URL')
+CLOVER_REDIRECT_URI = os.getenv('CLOVER_REDIRECT_URI')
+CLOVER_MERCHANT_URL = os.getenv('CLOVER_MERCHANT_URL')
+CLOVER_CLIENT_ID = os.getenv('CLOVER_CLIENT_ID')
+CLOVER_CLIENT_SECRET = os.getenv('CLOVER_CLIENT_SECRET')
+
+from clover_dal import CloverDAL
+clover_dal = CloverDAL(postgresql_db_utils.get_connection())
+
 # Utility function to get request data
 def get_request_data():
     """Retrieve data from request in a flexible way, handling JSON, form data, and query parameters."""
@@ -111,6 +124,12 @@ def get_request_data():
             sanitized_data[key] = validator(sanitized_data[key])
 
     return sanitized_data
+
+
+@app.route('/create_clover_items', methods=['GET'])
+def create_items():
+    create_clover_items.create_items()
+    return jsonify({"message": "Items created successfully!"})
 
 
 @app.route('/metrics')
@@ -523,19 +542,72 @@ def logout(current_user):
     return jsonify({"message": "Successfully logged out"}), 200
 
 
-# Basic authentication
-def check_auth(username, password):
-    return username == 'admin' and password == 'secret'
+import os
+
+@app.route('/connect-clover')
+def connect_clover():
+    # Step 1: Construct the Clover authorization URL with necessary scopes from environment
+    clover_auth_url = (
+        "{auth_url}?"
+        "client_id={client_id}&redirect_uri={redirect_uri}&response_type=code&scope={scope}"
+    ).format(
+        auth_url=CLOVER_AUTHORIZATION_URL,
+        client_id=CLOVER_CLIENT_ID,
+        redirect_uri=CLOVER_REDIRECT_URI,
+        scope=os.getenv('CLOVER_SCOPES', 'MERCHANT_READ')
+    )
+    print (f'---------------redirecting to clover_auth_url {clover_auth_url}')
+
+    # Step 2: Redirect the merchant to Clover's authorization page
+    return redirect(clover_auth_url)
 
 
-# Sanitize filename by removing any potentially dangerous characters
-def sanitize_filename(filename):
-    return re.sub(r'[^\w\s.-]', '', filename).strip()
+@app.route('/callback/clover')
+def clover_callback():
+    # Get the authorization code and merchant_id from the URL query parameters
+    authorization_code = request.args.get('code')
+    merchant_id = request.args.get('merchant_id')
+
+    if authorization_code:
+        data = {
+            'client_id': CLOVER_CLIENT_ID,
+            'client_secret': CLOVER_CLIENT_SECRET,
+            'code': authorization_code,
+            'redirect_uri': CLOVER_REDIRECT_URI,
+            'scope': 'MERCHANT_READ,PAYMENT_READ,ORDER_READ,INVENTORY_READ,CUSTOMER_READ,EMPLOYEE_READ,CASH_READ,MERCHANT_WRITE,PAYMENT_WRITE,ORDER_WRITE,INVENTORY_WRITE,CUSTOMER_WRITE,EMPLOYEE_WRITE,CASH_WRITE',
+        }
+        # Send a POST request to get the access token
+        response = requests.post(CLOVER_TOKEN_URL, data=data)
+        if response.status_code != 200:
+            return f"Failed to exchange authorization code: {response.text}", 400
+
+        token_data = response.json()
+        logger.info(f'Token data received: {token_data}')
+
+        access_token = token_data.get('access_token')
+        refresh_token = token_data.get('refresh_token')  # Optional
+        expires_in = token_data.get('expires_in', 3600)  # Default to 1 hour if missing
+        expires_at = datetime.now() + timedelta(seconds=expires_in)
+
+        # Store the tokens in the PostgreSQL database using CloverDAL
+        clover_dal.create_or_update_token(merchant_id, access_token, refresh_token, expires_at)
+
+        return "Clover authorization successful! Tokens stored."
+
+    logger.error("Authorization failed")
+    return "Authorization failed", 400
 
 
-# Clean up input data by trimming whitespace from string values
-def sanitize_input(data):
-    return {key: value.strip() if isinstance(value, str) else value for key, value in data.items()}
+@app.route('/webhook/clover', methods=['POST'])
+def clover_webhook():
+    # Clover will send JSON data in the request body
+    webhook_data = request.json
+
+    # Process the webhook data here (e.g., store receipt or transaction details)
+    print("Received webhook data:", webhook_data)
+
+    # Send a 200 OK response back to Clover to acknowledge receipt of the webhook
+    return "Webhook received", 200
 
 
 @app.errorhandler(400)

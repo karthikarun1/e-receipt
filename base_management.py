@@ -1,7 +1,9 @@
 import inspect
 import os
 import psycopg2
+import postgresql_db_utils
 from email_util import EmailUtil
+from clover_dal import CloverDAL
 from user_dal import UserDAL
 
 # Load environment variables
@@ -14,23 +16,9 @@ class BaseManager:
         print(f"BaseManager __init__() called by: {caller_frame.function} in {caller_frame.filename} at line {caller_frame.lineno}")
         self.email_util= EmailUtil()
 
-        dbname=os.getenv("DB_NAME")
-        user=os.getenv("DB_USER")
-        password=os.getenv("DB_PASSWORD")
-        host=os.getenv("DB_HOST")
-        port=os.getenv("DB_PORT")
-
-        self.db_connection = psycopg2.connect(
-            dbname=dbname,
-            user=user,
-            password=password,
-            host=host,
-            port=port
-        )
-
-        # Debugging: Print connection details
-        print (f'-------------------DB info: dbname: {dbname}, user: {user}, password: {password}, host: {host}, port: {port}')
+        self.db_connection = postgresql_db_utils.get_connection()
 
         # Ensure autocommit is disabled immediately after connection
         self.db_connection.autocommit = False
         self.user_dal = UserDAL(self.db_connection)
+        self.clover_dal = CloverDAL(self.db_connection)

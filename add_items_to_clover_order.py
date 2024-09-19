@@ -3,7 +3,9 @@ import requests
 # Clover API credentials and order details
 access_token = "62ce1cda-5163-cc37-8c3d-514d920ac5ac"
 merchant_id = "9N7D4W6ZBXGV1"
-order_id = "WVRQ3NYWG7Z7R"
+#order_id = "WVRQ3NYWG7Z7R"
+#order_id = "W94SD2QJ19RJJ"
+order_id = "KF6HDATMAK6PJ"
 
 # List of items to add to the order with quantity and unit price
 items = [
@@ -27,7 +29,7 @@ headers = {
 }
 
 # Iterate over the items and add each to the order with quantity and unit price
-for item in items:
+for item in items[:3]:
     total_price = item["unit_price"] * item["quantity"]  # Calculate total price
     payload = {
         "item": {"id": item["id"]},

@@ -597,6 +597,25 @@ def clover_callback():
     logger.error("Authorization failed")
     return "Authorization failed", 400
 
+from square_payment_handler import handle_payment_event
+
+@app.route('/webhooks/square_payment_update', methods=['POST'])
+def handle_square_webhook():
+    # Step 1: Parse the webhook data
+    data = get_request_data()
+    event_type = data.get('type')
+    print (f'--------square webhooks data {data}')
+    print (f'--------square webhooks event_type is {event_type}')
+
+    # Step 2: Filter the event type
+    if event_type == 'payment.updated':
+        # Pass the full data to the payment handler
+        response, status_code = handle_payment_event(data)
+        return jsonify(response), status_code
+
+    # Step 3: Ignore non-payment events
+    return jsonify({"status": "event_ignored", "event_type": event_type}), 200
+
 
 @app.route('/webhook/clover', methods=['POST'])
 def clover_webhook():
@@ -661,7 +680,7 @@ def start_timer():
     request.start_time = time.time()
 
 
-@app.after_request
+#@app.after_request
 def log_request_info(response):
     if request.endpoint != 'list_models':
         duration = time.time() - getattr(request, 'start_time', time.time())

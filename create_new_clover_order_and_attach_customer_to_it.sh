@@ -3,7 +3,5 @@ curl -X POST "https://sandbox.dev.clover.com/v3/merchants/9N7D4W6ZBXGV1/orders" 
 -H "Content-Type: application/json" \
 -d '{
   "state": "open",
-  "customer": {
-    "id": "VXRVA0ANGNPQG"
-  }
+  "customers": [{"id": "VXRVA0ANGNPQG"}]
 }'

@@ -1,0 +1,25 @@
+  After customer chooses receiptly as their option to get receipts, 
+  square triggers /notify_payment endpoint in receiptly sending the
+  payment_id and order_id. Receiptly in turn uses the payment_id to
+  get the payment details, including card fingerprint. It then checks
+  Is the card fingerprint is already found in its database?
+      - No: Then receiptly sends a form to the square POS to capture 
+        customer information (email or phone) - the form below is shown 
+        to the customer. This form should be embedded in POS: The form would 
+        appear seamlessly in the POS interface, making it feel like part 
+        of the checkout process.  Once 
+        the customer fills out this form and submits, it sends the info to
+        receiptly backend. Receiptly then captures the customer info, the 
+        fingerprint for the credit card number and creates a new customer profile
+        (with unique customer_id) and stores it. Then it retrieves the details of
+        the order and payment details and stores the order and payment details in
+        its database along with the customer_id. Then it emails / SMS the receipt
+        to the customer. Also it sends a push notification to the customer's account
+        in the receiptly mobile app so that the customer gets the new notification
+        and can view the receipt immediately. All these should happen in a fraction
+        of seconds without latency. 
+
+      - Yes: Then receiptly retrieves the order and payment details and stores them
+        with the customer_id (located with the card fingerprint), emails / SMS the
+        receipt to the customer and sends a push notification to the receiptly 
+        mobile app.

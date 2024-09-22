@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+import datetime
 import requests  # Assuming we're using requests to make API calls
 from receipt_dal import ReceiptDAL
 from email_util import EmailUtil
@@ -44,7 +44,7 @@ class ReceiptManager:
                 'total_amount': order_data['total_amount'],
                 'currency': order_data['currency'],
                 'merchant_name': merchant_data.get('name', 'Unknown Merchant'),
-                'date': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+                'date': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
             }
             logger.info(f"Receipt generated for order {order_data['order_id']}: {receipt_content}")
             return receipt_content

@@ -1,3 +1,4 @@
+import datetime
 import os
 import sys
 
@@ -161,3 +162,31 @@ def test_check_and_process_receipt_already_exists(
     mock_check_receipt_exists.assert_called_once()
     mock_insert_receipt.assert_not_called()
     mock_mark_receipt_as_failed.assert_not_called()
+
+
+def test_datetime_handling():
+    # Setup
+    manager = ReceiptManager(None, "https://api.example.com", "test_api_key")
+
+    # Sample input data
+    order_data = {
+        'order_id': 'order123',
+        'total_amount': 100,
+        'currency': 'USD',
+        'merchant_id': 'merchant456'
+    }
+    payment_data = {'payment_id': 'payment123'}
+    customer_data = {'name': 'John Doe', 'contact_info': 'john.doe@example.com'}
+    merchant_data = {'name': 'Example Merchant'}
+
+    # Generate receipt to test date handling
+    receipt = manager.generate_receipt(order_data, payment_data, customer_data, merchant_data)
+    
+    # Test the 'date' field is properly formatted
+    assert 'date' in receipt
+    # Parse the date string into a datetime object
+    date_obj = datetime.datetime.strptime(receipt['date'], '%Y-%m-%d %H:%M:%S').replace(tzinfo=datetime.timezone.utc)
+    # Check if the datetime object is within a reasonable time frame of now (e.g., within 60 seconds)
+    utc_now = datetime.datetime.now(datetime.timezone.utc)
+    assert abs((utc_now - date_obj).total_seconds()) < 60  # Ensure within 60 seconds window
+

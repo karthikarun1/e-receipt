@@ -1,6 +1,3 @@
--- Drop the verification table if it exists (optional for development/testing)
-DROP TABLE IF EXISTS public.verification;
-
 -- Create the verification table
 CREATE TABLE public.verification (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

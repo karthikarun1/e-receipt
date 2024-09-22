@@ -55,6 +55,10 @@ class EmailUtil:
             print(f"Failed to send email: {e}")
             traceback.print_exc()  # This prints the full stack trace
 
+    def send_sms(self, recipient, message):
+        # Placeholder for SMS sending functionality
+        print(f"Attempted to send SMS to {recipient} with message '{message}'. SMS functionality is not yet implemented.")
+
     def _generate_signature(self, data):
         """Generate HMAC signature for the data using the secret key."""
         print(f"10----------generate_signature params {data}")

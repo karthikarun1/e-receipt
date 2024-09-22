@@ -17,7 +17,7 @@ import utils
 
 # System defined
 from datetime import datetime, timedelta
-from flask import Flask, redirect, request, jsonify, render_template_string, send_file, session, url_for
+from flask import Flask, redirect, request, jsonify, render_template, render_template_string, send_file, session, url_for
 from flasgger import Swagger
 from input_validator import InputValidator
 from prometheus_client import CollectorRegistry, Gauge, generate_latest, Summary, REGISTRY
@@ -27,6 +27,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 # User defined
 import create_clover_items
+import square_pos_handler
+
 from invite_type import InviteType
 from metadata_store import MetadataStore
 from org_management import OrganizationManager
@@ -35,6 +37,7 @@ from superuser_management import register_superuser_command
 from storage import MlModelStorage
 from subscription_management import SubscriptionManager
 from user_management import UserManager
+from receipt_management import ReceiptManager
 from  remove_user_from_org import UserRemovalManager
 
 # load environment variables
@@ -55,8 +58,11 @@ s3_client = s3_utils.get_client()
 metadata_table_name = f'{table_prefix}_' + os.getenv('METADATA_TABLE')
 metadata_store = MetadataStore(table_name=metadata_table_name)
 storage = MlModelStorage(metadata_store=metadata_store)
+postgresql_db_conn = postgresql_db_utils.get_connection()
 
 user_manager = UserManager()
+receipt_manager = ReceiptManager(postgresql_db_conn)
+
 
 # Create a prometheus metric
 registry = CollectorRegistry()
@@ -101,7 +107,7 @@ CLOVER_CLIENT_ID = os.getenv('CLOVER_CLIENT_ID')
 CLOVER_CLIENT_SECRET = os.getenv('CLOVER_CLIENT_SECRET')
 
 from clover_dal import CloverDAL
-clover_dal = CloverDAL(postgresql_db_utils.get_connection())
+clover_dal = CloverDAL(postgresql_db_conn)
 
 # Utility function to get request data
 def get_request_data():
@@ -597,8 +603,9 @@ def clover_callback():
     logger.error("Authorization failed")
     return "Authorization failed", 400
 
-from square_payment_handler import handle_payment_event
-
+# Square automatically triggers calling this webhook when a 
+# payment.updated event occurs in the POS (since we are listening
+# for that event as configured in our square developer account.
 @app.route('/webhooks/square_payment_update', methods=['POST'])
 def handle_square_webhook():
     # Step 1: Parse the webhook data
@@ -610,14 +617,58 @@ def handle_square_webhook():
     # Step 2: Filter the event type
     if event_type == 'payment.updated':
         # Pass the full data to the payment handler
-        response, status_code = handle_payment_event(data)
+        response, status_code = square_pos_handler.handle_payment_event(data)
         return jsonify(response), status_code
 
     # Step 3: Ignore non-payment events
     return jsonify({"status": "event_ignored", "event_type": event_type}), 200
 
 
-@app.route('/webhook/clover', methods=['POST'])
+# This endpoint will be called by square POS when the user opts
+# for receiptly for their ereceipt
+@app.route('/notify_square_payment', methods=['POST'])
+def notify_square_payment():
+    # Use the get_request_data function to capture the payment details
+    data = get_request_data()
+    
+    # Extract necessary fields from the incoming request data
+    payment_id = data.get('payment_id')
+    order_id = data.get('order_id')
+    card_fingerprint = data.get('card_fingerprint')
+    
+    # Log the captured data
+    app.logger.info(f"---------------- sqp 10: Received payment notification with payment_id: {payment_id}, order_id: {order_id}, card_fingerprint: {card_fingerprint}")
+    
+    # Render the form from a template file
+    return render_template('contact_form.html', 
+                           payment_id=payment_id,
+                           order_id=order_id,
+                           card_fingerprint=card_fingerprint)
+
+SQUARE_API_BASE_URL = os.getenv('SQUARE_API_BASE_URL')
+
+
+# This will be called when user fills out the Receiptly form 
+# in square POS and submits it to be sent to receiptly.
+@app.route('/square_submit_contact_info', methods=['POST'])
+def square_submit_contact_info():
+    # Extract the data using existing methods
+    data = get_request_data()
+    payment_id = data.get('payment_id')
+    order_id = data.get('order_id')
+    card_fingerprint = data.get('card_fingerprint')
+    contact_info = data.get('contact_info')
+
+    # Use ReceiptManager to check and process the receipt
+    try:
+        receipt_manager.check_and_process_receipt(order_id, payment_id, card_fingerprint)
+        return jsonify({"message": "Receipt processed successfully."}), 200
+    except Exception as e:
+        logger.error(f"Error processing receipt: {str(e)}")
+        return jsonify({"error": "Failed to process receipt."}), 500
+
+
+@app.route('/webhooks/clover', methods=['POST'])
 def clover_webhook():
     # Clover will send JSON data in the request body
     webhook_data = request.json

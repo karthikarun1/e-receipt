@@ -1,9 +1,6 @@
 -- Ensure the uuid-ossp extension is enabled
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- Drop the users table if it exists (optional for development/testing)
-DROP TABLE IF EXISTS users;
-
 -- Create the users table
 CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

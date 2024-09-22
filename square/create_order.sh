@@ -20,6 +20,6 @@ curl https://connect.squareupsandbox.com/v2/orders \
         }
       ]
     },
-    "idempotency_key": "b9c01355-78yup-78ui-zul8-0bslj20abdaldal"
+    "idempotency_key": "b9c01355-78yup-78ui-b1p9-0bslj20abdaldal"
   }'
 

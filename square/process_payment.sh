@@ -12,8 +12,8 @@ curl https://connect.squareupsandbox.com/v2/payments \
       "amount": 2000,
       "currency": "USD"
     },
-    "idempotency_key": "cjlsj092ujlfs-28f1-098lwflw-b140db2dafbc", 
-    "order_id": "wcSn0cjfMiaZxTgXHIoNCQ4FTrZZY",
+    "idempotency_key": "cjlsj092ujlfs-28f1-098l0wjfw-b140db2dafbc", 
+    "order_id": "wM0siRUFbjXKa6vUiTSemGSQsiHZY",
     "location_id": "LYZE6ENMVZXZW"
   }'
 

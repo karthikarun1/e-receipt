@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Enter Contact Information</title>
+</head>
+<body>
+    <h2>Enter Your Contact Information for e-Receipt</h2>
+    <form action="/submit_contact_info" method="post">
+        <input type="hidden" name="payment_id" value="{{ payment_id }}">
+        <input type="hidden" name="order_id" value="{{ order_id }}">
+        <input type="hidden" name="card_fingerprint" value="{{ card_fingerprint }}">
+        <label for="contact_info">Email or Mobile Number:</label><br>
+        <input type="text" id="contact_info" name="contact_info" required><br><br>
+        <button type="submit">Submit</button>
+    </form>
+</body>
+</html>

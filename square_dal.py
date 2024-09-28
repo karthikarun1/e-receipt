@@ -179,3 +179,24 @@ class SquareDAL:
             result = cursor.fetchone()
             logger.debug(f"Query result for merchant_id {merchant_id}: {result}")
         return result
+
+    @transactional
+    def get_customer_by_fingerprint(self, card_fingerprint):
+        """
+        Retrieve customer details by card fingerprint.
+
+        Args:
+            card_fingerprint (str): The fingerprint of the card used by the customer.
+
+        Returns:
+            dict or None: The customer details if found, otherwise None.
+        """
+        query = """
+            SELECT * FROM square_customers WHERE card_fingerprint = %(card_fingerprint)s;
+        """
+
+        with self.db_session.cursor() as cursor:
+            cursor.execute(query, {'card_fingerprint': card_fingerprint})
+            result = cursor.fetchone()
+            logger.debug(f"Query result for card_fingerprint {card_fingerprint}: {result}")
+        return result

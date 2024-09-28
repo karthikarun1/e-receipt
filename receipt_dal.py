@@ -10,27 +10,34 @@ class ReceiptDAL:
         self.db_session = db_session
 
     # Essential Functions Implementation
-
     @transactional
     def check_receipt_exists(self, order_id, payment_id, customer_id):
         """
         Check if a receipt already exists in the database for the given combination.
+
+        Args:
+            order_id (str): The ID of the order.
+            payment_id (str): The ID of the payment.
+            customer_id (str): The ID of the customer.
+
+        Returns:
+            bool: True if the receipt exists, False otherwise.
         """
         query = """
             SELECT id FROM receipts
-            WHERE order_id = :order_id
-              AND payment_id = :payment_id
-              AND customer_id = :customer_id;
+            WHERE order_id = %s
+              AND payment_id = %s
+              AND customer_id = %s;
         """
-        with self.db_session.cursor() as cursor:
-            cursor.execute(query, {
-                'order_id': order_id,
-                'payment_id': payment_id,
-                'customer_id': customer_id
-            })
-            result = cursor.fetchone()
-            logger.debug(f"Receipt existence check for order_id {order_id}, payment_id {payment_id}, customer_id {customer_id}: {result}")
-        return result is not None
+        try:
+            with self.db_session.cursor() as cursor:
+                cursor.execute(query, (order_id, payment_id, customer_id))
+                result = cursor.fetchone()
+                logger.debug(f"Receipt existence check for order_id {order_id}, payment_id {payment_id}, customer_id {customer_id}: {result}")
+            return result is not None
+        except Exception as e:
+            logger.error(f"Error checking receipt existence: {e}")
+            return False
 
     @transactional
     def insert_receipt(self, order_id, payment_id, customer_id, contact_info, provider, receipt_type, sent_status):

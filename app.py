@@ -40,11 +40,15 @@ from user_management import UserManager
 from receipt_management import ReceiptManager
 from  remove_user_from_org import UserRemovalManager
 
+from pos_configurations import SquarePOSConfig
+
 # load environment variables
 from config_loader import load_environment
 load_environment()
 
 app = Flask(__name__)
+app.config["ENV"] = os.getenv("ENV", "prod")  # Sets the environment, e.g., dev, prod
+app.config["DEBUG"] = os.getenv("DEBUG", "False").lower() == "true"  # Converts string to boolean
 
 # Register the superuser CLI command
 register_superuser_command(app)
@@ -61,8 +65,11 @@ storage = MlModelStorage(metadata_store=metadata_store)
 postgresql_db_conn = postgresql_db_utils.get_connection()
 
 user_manager = UserManager()
-receipt_manager = ReceiptManager(postgresql_db_conn)
 
+# Define constants for Square API
+from square_dal import SquareDAL
+square_dal = SquareDAL(db_session=postgresql_db_conn)
+square_receipt_manager = ReceiptManager(postgresql_db_conn, SquarePOSConfig())
 
 # Create a prometheus metric
 registry = CollectorRegistry()
@@ -617,7 +624,8 @@ def handle_square_webhook():
     # Step 2: Filter the event type
     if event_type == 'payment.updated':
         # Pass the full data to the payment handler
-        response, status_code = square_pos_handler.handle_payment_event(data)
+        response, status_code = square_pos_handler.handle_payment_event(
+            data, square_receipt_manager, square_dal)
         return jsonify(response), status_code
 
     # Step 3: Ignore non-payment events
@@ -640,32 +648,38 @@ def notify_square_payment():
     app.logger.info(f"---------------- sqp 10: Received payment notification with payment_id: {payment_id}, order_id: {order_id}, card_fingerprint: {card_fingerprint}")
     
     # Render the form from a template file
-    return render_template('contact_form.html', 
+    return render_template('square_customer_info_form.html', 
                            payment_id=payment_id,
                            order_id=order_id,
                            card_fingerprint=card_fingerprint)
 
-SQUARE_API_BASE_URL = os.getenv('SQUARE_API_BASE_URL')
 
-
-# This will be called when user fills out the Receiptly form 
-# in square POS and submits it to be sent to receiptly.
-@app.route('/square_submit_contact_info', methods=['POST'])
-def square_submit_contact_info():
+@app.route('/square_submit_customer_contact_info', methods=['POST'])
+def square_submit_customer_contact_info():
     # Extract the data using existing methods
     data = get_request_data()
+    logger.info(f"Received data: {data}")  # Log the incoming data for debugging
+
+    # Extract required fields
     payment_id = data.get('payment_id')
     order_id = data.get('order_id')
     card_fingerprint = data.get('card_fingerprint')
     contact_info = data.get('contact_info')
 
-    # Use ReceiptManager to check and process the receipt
-    try:
-        receipt_manager.check_and_process_receipt(order_id, payment_id, card_fingerprint)
-        return jsonify({"message": "Receipt processed successfully."}), 200
-    except Exception as e:
-        logger.error(f"Error processing receipt: {str(e)}")
-        return jsonify({"error": "Failed to process receipt."}), 500
+    # Check if any required fields are missing
+    if not all([payment_id, order_id, card_fingerprint, contact_info]):
+        logger.error("Missing required fields in the request data.")
+        return jsonify({"error": "Missing required fields."}), 400
+
+    # Fetch the actual customer_id using card_fingerprint
+    customer_id = square_dal.get_customer_by_fingerprint(card_fingerprint)
+    if not customer_id:
+        logger.error("Customer not found with the given card fingerprint.")
+        return jsonify({"error": "Customer not found with the given card fingerprint."}), 400
+
+    # Call the receipt processing function with the correct customer_id
+    square_receipt_manager.check_and_process_receipt(order_id, payment_id, customer_id)
+    return jsonify({"message": "Receipt processed successfully."}), 200
 
 
 @app.route('/webhooks/clover', methods=['POST'])
@@ -692,7 +706,8 @@ def not_found(error):
 
 @app.errorhandler(500)
 def internal_error(error):
-    return jsonify({"error": "Internal Server Error", "message": str(error)}), 500
+    #return jsonify({"error": "Internal Server Error", "message": str(error)}), 500
+    return handle_generic_error(error)
 
 
 @app.route('/health_check', methods=['GET'])
@@ -803,10 +818,29 @@ def handle_lookup_error(error):
     logger.error("Lookup error: %s", str(error))
     return jsonify({"error": str(error)}), 404
 
+#@app.errorhandler(Exception)
+#def handle_unexpected_error(error):
+#    logger.error("Unexpected error with stack trace: %s", traceback.format_exc())
+#    return jsonify({"error": "An unexpected error occurred. Please try again later."}), 500
+
+# Generic error handler for all exceptions
 @app.errorhandler(Exception)
-def handle_unexpected_error(error):
-    logger.error("Unexpected error with stack trace: %s", traceback.format_exc())
-    return jsonify({"error": "An unexpected error occurred. Please try again later."}), 500
+def handle_generic_error(error):
+    # Log the full stack trace
+    logger.error("Error occurred: %s", traceback.format_exc())
+    
+    # Check the environment and return detailed errors only in development
+    if app.config["ENV"] == "development":
+        response = {
+            "error": str(error),
+            "details": traceback.format_exc()
+        }
+    else:
+        # Generic message for production
+        response = {"error": "An unexpected error occurred. Please try again later."}
+    
+    # Return the JSON response with the appropriate status code
+    return jsonify(response), 500
 
 @app.errorhandler(jwt.ExpiredSignatureError)
 def handle_expired_signature_error(error):

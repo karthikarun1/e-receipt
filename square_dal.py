@@ -70,14 +70,14 @@ class SquareDAL:
             logger.info(f"Successfully inserted payment with payment_id {payment_id}.")
 
     @transactional
-    def insert_customer(self, customer_id, contact_info, card_fingerprint):
+    def insert_customer(self, contact_info, card_fingerprint):
         """
-        Insert a new customer into the square_customers table with uniqueness check.
+        Insert a new customer into the square_customers table.
+        Generates a new customer_id and returns it.
         """
-        if self.get_customer_by_customer_id(customer_id):
-            logger.warning(f"Customer with customer_id {customer_id} already exists. Skipping insertion.")
-            return
-        
+        # Generate a new customer_id using UUID
+        customer_id = str(uuid.uuid4())
+
         query = """
             INSERT INTO square_customers (id, customer_id, contact_info, card_fingerprint, created_at, updated_at)
             VALUES (%(id)s, %(customer_id)s, %(contact_info)s, %(card_fingerprint)s, %(now)s, %(now)s);
@@ -85,14 +85,17 @@ class SquareDAL:
 
         with self.db_session.cursor() as cursor:
             cursor.execute(query, {
-                'id': str(uuid.uuid4()),
-                'customer_id': customer_id,
+                'id': str(uuid.uuid4()),  # Unique ID for this entry
+                'customer_id': customer_id,  # Generated customer ID
                 'contact_info': contact_info,
                 'card_fingerprint': card_fingerprint,
                 'now': datetime.utcnow()
             })
             self.db_session.commit()
-            logger.info(f"Successfully inserted customer with customer_id {customer_id}.")
+
+        logger.info(f"Successfully inserted customer with customer_id {customer_id}.")
+        return customer_id  # Return the newly generated customer_id
+
 
     @transactional
     def insert_merchant(self, merchant_id, name, location, contact_info):

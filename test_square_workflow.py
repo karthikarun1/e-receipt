@@ -115,29 +115,26 @@ def simulate_form_submission(payment_id, order_id, card_fingerprint):
     """
     Sends a request to the /square_submit_customer_contact_info endpoint to simulate form submission.
     """
-    submit_contact_info_url = "https://c676-2603-8081-16f0-da30-7d51-6f45-c448-b657.ngrok-free.app/square_submit_customer_contact_info"
+    submit_contact_info_url = f"{BASE_URL}/square_submit_customer_contact_info"
 
     # Payload simulating the form submission data
     payload = {
         "payment_id": payment_id,
         "order_id": order_id,
         "card_fingerprint": card_fingerprint,
-        "contact_info": {
-            "email": os.getenv('SQUARE_CUSTOMER_EMAIL')  # Simulating customer's email entered in the form
-        }
+        "contact_info": os.getenv('SQUARE_CUSTOMER_EMAIL') # Simulating customer's email entered in the form
     }
 
-    try:
-        logging.info("Sending request to /square_submit_customer_contact_info with form data.")
-        response = requests.post(submit_contact_info_url, json=payload)
-        response.raise_for_status()  # Raises an exception for HTTP errors
+    logging.info("Sending request to /square_submit_customer_contact_info with form data.")
+    response = requests.post(submit_contact_info_url, json=payload)
+    #response.raise_for_status()  # Raises an exception for HTTP errors
 
-        # Log and print the response
-        logging.info(f"Response from /square_submit_customer_contact_info: {response.json()}")
-        print(response.json())
+    # Log and print the response
+    #logging.info(f"Response from /square_submit_customer_contact_info: {response.json()}")
+    #print(response.json())
 
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Error sending request to /square_submit_customer_contact_info: {e}")
+    #except requests.exceptions.RequestException as e:
+    #    logging.error(f"Error sending request to /square_submit_customer_contact_info: {e}")
 
 
 if __name__ == "__main__":

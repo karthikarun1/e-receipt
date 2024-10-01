@@ -40,6 +40,8 @@ from user_management import UserManager
 from receipt_management import ReceiptManager
 from  remove_user_from_org import UserRemovalManager
 
+from pos_dal import POSDAL
+from pos_dal_mappers import SquarePOSMapper
 from pos_configurations import SquarePOSConfig
 
 # load environment variables
@@ -66,9 +68,6 @@ postgresql_db_conn = postgresql_db_utils.get_connection()
 
 user_manager = UserManager()
 
-# Define constants for Square API
-from square_dal import SquareDAL
-square_dal = SquareDAL(db_session=postgresql_db_conn)
 square_receipt_manager = ReceiptManager(postgresql_db_conn, SquarePOSConfig())
 
 # Create a prometheus metric
@@ -615,21 +614,60 @@ def clover_callback():
 # for that event as configured in our square developer account.
 @app.route('/webhooks/square_payment_update', methods=['POST'])
 def handle_square_webhook():
+    """
+    Handles the Square webhook for payment updates.
+    If no existing customer is found based on the credit card fingerprint, the event is ignored.
+    """
     # Step 1: Parse the webhook data
     data = get_request_data()
     event_type = data.get('type')
-    print (f'--------square webhooks data {data}')
-    print (f'--------square webhooks event_type is {event_type}')
+    logger.info(f"Received Square webhook event: {event_type}, data: {data}")
 
-    # Step 2: Filter the event type
-    if event_type == 'payment.updated':
-        # Pass the full data to the payment handler
-        response, status_code = square_pos_handler.handle_payment_event(
-            data, square_receipt_manager, square_dal)
-        return jsonify(response), status_code
+    # Step 2: Handle only payment.updated events
+    if event_type != 'payment.updated':
+        logger.info(f"Event type {event_type} is not handled.")
+        return jsonify({"status": "event_ignored", "event_type": event_type}), 200
 
-    # Step 3: Ignore non-payment events
-    return jsonify({"status": "event_ignored", "event_type": event_type}), 200
+    # Step 3: Extract relevant payment and order information
+    payment_data = data.get('data', {}).get('object', {}).get('payment', {})
+    payment_id = payment_data.get('id')
+    order_id = payment_data.get('order_id')
+    card_fingerprint = payment_data.get('card_fingerprint')
+
+    if not all([payment_id, order_id, card_fingerprint]):
+        logger.error("Missing required fields (payment_id, order_id, card_fingerprint) from the webhook data.")
+        return jsonify({"error": "Missing required fields."}), 400
+
+    # Initialize POSDAL
+    pos_dal = POSDAL(postgresql_db_conn)
+
+    # Step 4: Query for existing customer using the credit card fingerprint
+    local_customer_id = pos_dal.get_customer_by_fingerprint(card_fingerprint)
+
+    # Step 5: If no local customer ID is found, ignore the event
+    if not local_customer_id:
+        logger.info(f"No local customer found for payment_id {payment_id}. Ignoring event.")
+        return jsonify({"status": "event_ignored", "reason": "no_local_customer"}), 200
+
+    # Step 6: Insert or update the order and payment in the database
+    order_data = {
+        'order_id': order_id,
+        # Add any other fields from payment_data necessary for order
+    }
+    pos_dal.insert_order(**order_data)
+
+    payment_data_to_insert = {
+        'payment_id': payment_id,
+        'order_id': order_id,
+        'customer_id': local_customer_id,  # Use local customer ID from the database
+        # Add other necessary fields for payment
+    }
+    pos_dal.insert_payment(**payment_data_to_insert)
+
+    # Step 7: Process the receipt with all the data now in place
+    square_receipt_manager.check_and_process_receipt(order_id, payment_id, local_customer_id)
+
+    return jsonify({"message": "Webhook processed successfully."}), 200
 
 
 # This endpoint will be called by square POS when the user opts
@@ -651,14 +689,18 @@ def notify_square_payment():
     return render_template('square_customer_info_form.html', 
                            payment_id=payment_id,
                            order_id=order_id,
-                           card_fingerprint=card_fingerprint)
+                           card_fingerprint=card_fingerprint,
+                           base_url=os.getenv('BASE_URL'))
 
 
 @app.route('/square_submit_customer_contact_info', methods=['POST'])
 def square_submit_customer_contact_info():
-    # Extract the data using existing methods
-    data = get_request_data()
-    logger.info(f"Received data: {data}")  # Log the incoming data for debugging
+    """
+    Submits customer contact information, checks if the customer already exists using credit card fingerprint
+    or contact info, stores it in the database if new, and processes the receipt.
+    """
+    data = request.get_json()
+    logger.info(f"Received data: {data}")
 
     # Extract required fields
     payment_id = data.get('payment_id')
@@ -666,20 +708,83 @@ def square_submit_customer_contact_info():
     card_fingerprint = data.get('card_fingerprint')
     contact_info = data.get('contact_info')
 
-    # Check if any required fields are missing
     if not all([payment_id, order_id, card_fingerprint, contact_info]):
         logger.error("Missing required fields in the request data.")
         return jsonify({"error": "Missing required fields."}), 400
 
-    # Fetch the actual customer_id using card_fingerprint
-    customer_id = square_dal.get_customer_by_fingerprint(card_fingerprint)
-    if not customer_id:
-        logger.error("Customer not found with the given card fingerprint.")
-        return jsonify({"error": "Customer not found with the given card fingerprint."}), 400
+    pos_dal = POSDAL(postgresql_db_conn)
+    square_mapper = SquarePOSMapper()
 
-    # Call the receipt processing function with the correct customer_id
+    # Step 1: Query for existing customer using credit card fingerprint or contact info
+    customer_id = pos_dal.get_customer_by_fingerprint_or_contact(card_fingerprint, contact_info)
+
+    if not customer_id:
+        # Step 2: If customer doesn't exist, insert the customer in PostgreSQL
+        customer_data = square_mapper.map_customer({
+            'card_fingerprint': card_fingerprint,
+            'contact_info': contact_info
+        })
+        customer_id = pos_dal.insert_customer(
+            customer_data['customer_identifier'],
+            customer_data['contact_info'],
+            customer_data['provider_name']
+        )
+
+    # Step 3: Insert or update order and payment
+    order_data = square_mapper.map_order({
+        'order_id': order_id,
+        'merchant_id': 'some_merchant_id',  # Provide the correct merchant_id
+        'total_amount': data.get('amount'),  # Assuming 'amount' comes from data
+        'currency': data.get('currency'),  # Assuming 'currency' comes from data
+        'order_status': data.get('status'),  # Assuming 'status' comes from data
+        'order_date': data.get('created_at'),  # Assuming 'created_at' comes from data
+        'provider_name': 'Square',
+        'extra_data': data  # Optional extra data
+    })
+    pos_dal.insert_order(**order_data)
+
+    payment_data = square_mapper.map_payment({
+        'payment_id': payment_id,
+        'order_id': order_id,
+        'customer_id': customer_id,
+        'provider_name': 'Square'  # Add other necessary fields if needed
+    })
+    pos_dal.insert_payment(**payment_data)
+
+    # Step 4: Process the receipt
     square_receipt_manager.check_and_process_receipt(order_id, payment_id, customer_id)
-    return jsonify({"message": "Receipt processed successfully."}), 200
+
+    return jsonify({"message": "Receipt processed and customer information saved successfully."}), 200
+
+
+def create_or_update_customer_in_square(contact_info):
+    """
+    Creates or updates customer information in Square POS.
+    Handles 404 NOT_FOUND errors gracefully and logs the issue.
+    """
+    url = "https://connect.squareup.com/v2/customers"
+    headers = {
+        "Authorization": "Bearer YOUR_SQUARE_ACCESS_TOKEN",
+        "Content-Type": "application/json"
+    }
+
+    # Prepare the payload for the Square API call
+    payload = {
+        "email_address": contact_info if "@" in contact_info else None,
+        "phone_number": contact_info if "@" not in contact_info else None
+    }
+
+    response = requests.post(url, json=payload, headers=headers)
+
+    if response.status_code == 200:
+        customer = response.json().get('customer', {})
+        return customer.get('id')
+    elif response.status_code == 404:
+        logger.warning("Customer not found in Square POS, falling back to local database.")
+        return None  # No customer_id from Square, fallback to local handling
+    else:
+        logger.error(f"Square API error: {response.text}")
+        raise ValueError(f"Square API error: {response.text}")
 
 
 @app.route('/webhooks/clover', methods=['POST'])

@@ -31,9 +31,10 @@ class POSConfig:
         if missing_urls:
             raise ValueError(f"Missing one or more required URLs or API key: {', '.join(missing_urls)}")
 
+
 class SquarePOSConfig(POSConfig):
     """
-    Configuration class for Square POS provider.
+    Configuration and data parsing class for Square POS provider.
     """
 
     def __init__(self):
@@ -44,6 +45,82 @@ class SquarePOSConfig(POSConfig):
             merchant_env='SQUARE_MERCHANT_URL',
             api_key_env='SQUARE_ACCESS_TOKEN'  # Load the API key specific to Square
         )
+
+    # Parsing methods specific to Square
+    def parse_order_data(self, raw_data):
+        order = raw_data.get('order', {})
+        return {
+            'order_id': order.get('id'),
+            'location_id': order.get('location_id'),
+            'total_amount': order.get('total_money', {}).get('amount'),
+            'currency': order.get('total_money', {}).get('currency'),
+            'created_at': order.get('created_at'),
+            'updated_at': order.get('updated_at'),
+            'line_items': order.get('line_items', []),
+            'state': order.get('state'),
+            'net_amount': order.get('net_amounts', {}).get('total_money', {}).get('amount')
+        }
+
+    def parse_payment_data(self, raw_data):
+        payment = raw_data.get('payment', {})
+        return {
+            'payment_id': payment.get('id'),
+            'order_id': payment.get('order_id'),
+            'location_id': payment.get('location_id'),
+            'status': payment.get('status'),
+            'amount': payment.get('amount_money', {}).get('amount'),
+            'currency': payment.get('amount_money', {}).get('currency'),
+            'created_at': payment.get('created_at'),
+            'updated_at': payment.get('updated_at'),
+            'card_details': {
+                'card_brand': payment.get('card_details', {}).get('card', {}).get('card_brand'),
+                'last_4': payment.get('card_details', {}).get('card', {}).get('last_4'),
+                'fingerprint': payment.get('card_details', {}).get('card', {}).get('fingerprint'),
+                'exp_month': payment.get('card_details', {}).get('card', {}).get('exp_month'),
+                'exp_year': payment.get('card_details', {}).get('card', {}).get('exp_year')
+            },
+            'receipt_url': payment.get('receipt_url'),
+            'receipt_number': payment.get('receipt_number')
+        }
+
+    def parse_customer_data(self, raw_data):
+        # Assuming customer data is fetched separately and provided here
+        return {
+            'customer_id': raw_data.get('id'),
+            'name': raw_data.get('given_name', 'Unknown') + ' ' + raw_data.get('family_name', 'Unknown'),
+            'email': raw_data.get('email_address'),
+        }
+
+    def get_merchant_id(self, raw_order_data, raw_payment_data):
+        """
+        Extract the merchant ID dynamically from the order or payment data.
+        For Square POS, we'll use the location_id, which corresponds to the merchant.
+        """
+        merchant_id = raw_order_data.get('location_id') or raw_payment_data.get('location_id')
+        
+        if not merchant_id:
+            raise ValueError("Merchant ID (location_id) not found in order or payment data")
+        
+        return merchant_id
+
+    def fetch_merchant_data(self, merchant_id):
+        """
+        Fetch merchant details from Square using the location_id (merchant_id).
+        """
+        url = f"{self.api_base_url}/locations/{merchant_id}"
+        response = requests.get(url, headers=self.headers)
+        
+        if response.status_code != 200:
+            raise ValueError(f"Failed to fetch merchant data for merchant_id: {merchant_id}")
+        
+        return response.json()  # Return merchant details
+
+    def parse_merchant_data(self, raw_data):
+        return {
+            'merchant_id': raw_data.get('id'),
+            'name': raw_data.get('business_name'),
+        }
+
 
 '''
 class CloverPOSConfig(POSConfig):

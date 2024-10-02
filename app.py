@@ -741,6 +741,7 @@ def square_submit_customer_contact_info():
         'provider_name': 'Square',
         'extra_data': data  # Optional extra data
     })
+    print (f'-----------order data is {order_data}')
     pos_dal.insert_order(**order_data)
 
     payment_data = square_mapper.map_payment({

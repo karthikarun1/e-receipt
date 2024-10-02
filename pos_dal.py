@@ -36,10 +36,12 @@ class POSDAL:
     # Insert a new order
     @transactional
     def insert_order(self, order_id, merchant_id, total_amount, currency, order_status, order_date, provider_name, extra_data=None):
+        print (f'IO10----------insert_order data is order_id: {order_id}, merchant_id: {merchant_id, total_amount: {total_amount}}, curency: {currency}, order_status: {order_status}, order_data: {order_date}, provider_name: {provider_name}, extra_data: {extra_data}')
         if self.get_order_by_order_id(order_id):
             logger.warning(f"Order with order_id {order_id} already exists. Skipping insertion.")
             return
-        
+       
+        print ('-------IO20') 
         query = """
             INSERT INTO orders (id, order_id, merchant_id, total_amount, currency, order_status, order_date, provider_name, extra_data, created_at, updated_at)
             VALUES (%(id)s, %(order_id)s, %(merchant_id)s, %(total_amount)s, %(currency)s, %(order_status)s, %(order_date)s, %(provider_name)s, %(extra_data)s, %(now)s, %(now)s);
@@ -59,6 +61,7 @@ class POSDAL:
             })
             self.db_session.commit()
             logger.info(f"Successfully inserted order with order_id {order_id}.")
+        print ('-------IO30') 
 
     # Insert a new payment
     @transactional

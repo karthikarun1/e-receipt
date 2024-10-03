@@ -38,6 +38,7 @@ CREATE TABLE orders (
     customer_id UUID REFERENCES customers(id) ON DELETE CASCADE,
     provider_id UUID REFERENCES providers(id) ON DELETE SET NULL, -- Link to the POS provider
     total_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00, -- Default total amount
+    currency VARCHAR(10) DEFAULT 'USD',
     order_date TIMESTAMP DEFAULT now(),
     order_status VARCHAR(50) NOT NULL DEFAULT 'pending', -- Default order status
     created_at TIMESTAMP DEFAULT now(),

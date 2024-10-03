@@ -1,9 +1,0 @@
-what are the complete  list of all possible operations to be done related to organization as far as ML model management and deployment goes. Could you provide me a complete list. Then we can address them one by one
-
-<response>
-
-Great. Among these what would be essential for MVP
-
-<response>
-
-User and Group Management within Organization - Give me code to "Invite users to join the organization." - do all comprehensive checks and handle edge cases. Provide end user friendly error messages. Use generic error handlers.
